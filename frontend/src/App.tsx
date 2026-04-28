@@ -9,7 +9,15 @@ import { TopList } from './components/TopList';
 import { VolumeChart } from './components/VolumeChart';
 import { useLiveMessages } from './hooks/useLiveMessages';
 import type { ChannelInfo, ChatMessage, TopItem, VolumePoint } from './types';
-import { incrementTopItems, incrementVolume } from './utils/analytics';
+import {
+  buildTopChattersFromMessages,
+  buildTopEmotesFromMessages,
+  buildVolumeFromMessages,
+  incrementTopItems,
+  incrementVolume,
+  mergeMessages,
+  mergeVolumeSeries
+} from './utils/analytics';
 
 export function App() {
   const [channels, setChannels] = React.useState<ChannelInfo[]>([]);
@@ -20,10 +28,12 @@ export function App() {
   const [topEmotes, setTopEmotes] = React.useState<TopItem[]>([]);
   const [error, setError] = React.useState<string>('');
   const minuteChatters = React.useRef<Map<string, Set<string>>>(new Map());
+  const liveMessagesByChannel = React.useRef<Map<string, ChatMessage[]>>(new Map());
+  const displayedVolumeChannel = React.useRef<string>('');
 
   const activeChannel = selectedChannel || channels[0]?.channel_login || '';
 
-  const applyLiveMessage = React.useCallback((message: ChatMessage) => {
+  const applyVisibleMessage = React.useCallback((message: ChatMessage) => {
     setMessages((current) => [...current.slice(-149), message]);
     setVolume((current) => incrementVolume(current, message, minuteChatters.current));
     setTopChatters((current) => incrementTopItems(current, message.chatter_login || message.chatter_display_name));
@@ -36,21 +46,43 @@ export function App() {
     }
   }, []);
 
+  const handleLiveMessage = React.useCallback(
+    (message: ChatMessage) => {
+      const channelMessages = liveMessagesByChannel.current.get(message.channel_login) ?? [];
+      liveMessagesByChannel.current.set(message.channel_login, mergeMessages(channelMessages, [message]));
+
+      if (!activeChannel || message.channel_login === activeChannel) {
+        applyVisibleMessage(message);
+      }
+    },
+    [activeChannel, applyVisibleMessage]
+  );
+
   const socketState = useLiveMessages({
-    activeChannel,
-    onMessage: applyLiveMessage
+    activeChannel: '',
+    onMessage: handleLiveMessage
   });
 
   const loadDashboard = React.useCallback(async () => {
     try {
       setError('');
       const dashboard = await loadDashboardData(activeChannel);
+      const liveMessages = activeChannel ? liveMessagesByChannel.current.get(activeChannel) ?? [] : [];
+      const mergedMessages = mergeMessages(dashboard.messages, liveMessages);
+      const liveVolume = buildVolumeFromMessages(mergedMessages);
+      const isSameDisplayedChannel = displayedVolumeChannel.current === activeChannel;
+
       setChannels(dashboard.channels);
-      setMessages(dashboard.messages);
-      setVolume(dashboard.volume);
-      setTopChatters(dashboard.topChatters);
-      setTopEmotes(dashboard.topEmotes);
+      setMessages(mergedMessages);
+      setVolume((current) =>
+        isSameDisplayedChannel
+          ? mergeVolumeSeries(current, dashboard.volume, liveVolume)
+          : mergeVolumeSeries(dashboard.volume, liveVolume)
+      );
+      setTopChatters(dashboard.topChatters.length > 0 ? dashboard.topChatters : buildTopChattersFromMessages(mergedMessages));
+      setTopEmotes(dashboard.topEmotes.length > 0 ? dashboard.topEmotes : buildTopEmotesFromMessages(mergedMessages));
       minuteChatters.current.clear();
+      displayedVolumeChannel.current = activeChannel;
 
       if (!selectedChannel && dashboard.channels.length > 0) {
         setSelectedChannel(dashboard.channels[0].channel_login);
