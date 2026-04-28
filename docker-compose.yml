@@ -22,6 +22,12 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
@@ -34,13 +40,21 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-twitch_analyze}
     volumes:
       - ./sql/init-clickhouse.sql:/docker-entrypoint-initdb.d/init-clickhouse.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
   backend:
     build:
       context: ./backend
     depends_on:
-      - kafka
-      - clickhouse
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -58,8 +72,10 @@ services:
     build:
       context: ./backend
     depends_on:
-      - kafka
-      - clickhouse
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -76,7 +92,9 @@ services:
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.7.0
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
     command:
       - "--kafka.server=kafka:29092"
     ports:

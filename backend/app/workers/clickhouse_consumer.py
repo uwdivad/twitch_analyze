@@ -2,6 +2,7 @@ import asyncio
 import logging
 import signal
 from contextlib import suppress
+from typing import Any
 
 from aiokafka import AIOKafkaConsumer
 from prometheus_client import start_http_server
@@ -13,6 +14,22 @@ from app.models.chat import ChatMessage
 from app.storage.clickhouse import ClickHouseRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _record_location(record: Any) -> str:
+    return (
+        f"{getattr(record, 'topic', '<unknown>')}:"
+        f"{getattr(record, 'partition', '<unknown>')}:"
+        f"{getattr(record, 'offset', '<unknown>')}"
+    )
+
+
+def chat_message_from_record(record: Any) -> ChatMessage | None:
+    try:
+        return ChatMessage.model_validate(loads(record.value))
+    except Exception:
+        logger.exception("Skipping invalid Kafka chat message at %s", _record_location(record))
+        return None
 
 
 class ClickHouseConsumerWorker:
@@ -47,26 +64,41 @@ class ClickHouseConsumerWorker:
         try:
             while not self._stop.is_set():
                 records = await self._consumer.getmany(timeout_ms=500, max_records=self._batch_size)
+                consumed_records = False
                 for partition_records in records.values():
                     for record in partition_records:
-                        batch.append(ChatMessage(**loads(record.value)))
+                        consumed_records = True
+                        message = chat_message_from_record(record)
+                        if message is not None:
+                            batch.append(message)
 
                 now = asyncio.get_running_loop().time()
                 should_flush = batch and (
                     len(batch) >= self._batch_size or now - last_flush >= self._flush_interval_seconds
                 )
                 if should_flush:
-                    await self._repo.insert_messages(batch)
-                    WORKER_BATCHES_INSERTED.inc()
+                    try:
+                        await self._repo.insert_messages(batch)
+                    except Exception:
+                        logger.exception("Failed to insert ClickHouse batch; will retry without committing offsets")
+                        await asyncio.sleep(self._flush_interval_seconds)
+                    else:
+                        WORKER_BATCHES_INSERTED.inc()
+                        await self._consumer.commit()
+                        logger.info("Inserted %s chat messages into ClickHouse", len(batch))
+                        batch.clear()
+                        last_flush = now
+                elif consumed_records and not batch:
                     await self._consumer.commit()
-                    logger.info("Inserted %s chat messages into ClickHouse", len(batch))
-                    batch.clear()
-                    last_flush = now
         finally:
             if batch:
-                await self._repo.insert_messages(batch)
-                WORKER_BATCHES_INSERTED.inc()
-                await self._consumer.commit()
+                try:
+                    await self._repo.insert_messages(batch)
+                except Exception:
+                    logger.exception("Failed to insert final ClickHouse batch; leaving offsets uncommitted")
+                else:
+                    WORKER_BATCHES_INSERTED.inc()
+                    await self._consumer.commit()
             await self._consumer.stop()
             WORKER_KAFKA_CONNECTED.set(0)
 

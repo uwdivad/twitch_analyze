@@ -14,7 +14,7 @@ Twitch IRC or EventSub
   -> React dashboard
 ```
 
-See [docs/architecture-notes.md](docs/architecture-notes.md) and [docs/project-flow.md](docs/project-flow.md) for design notes and diagrams.
+See [docs/architecture-notes.md](docs/architecture-notes.md), [docs/project-flow.md](docs/project-flow.md), and [docs/troubleshooting-log.md](docs/troubleshooting-log.md) for design notes, diagrams, and the running troubleshooting log.
 
 ## Local Setup
 
