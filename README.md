@@ -14,7 +14,7 @@ Twitch IRC or EventSub
   -> React dashboard
 ```
 
-See [docs/architecture-notes.md](docs/architecture-notes.md), [docs/project-flow.md](docs/project-flow.md), and [docs/troubleshooting-log.md](docs/troubleshooting-log.md) for design notes, diagrams, and the running troubleshooting log.
+See [docs/architecture-notes.md](docs/architecture-notes.md), [docs/project-flow.md](docs/project-flow.md), [docs/kubernetes-roadmap.md](docs/kubernetes-roadmap.md), and [docs/troubleshooting-log.md](docs/troubleshooting-log.md) for design notes, diagrams, the Kubernetes learning path, and the running troubleshooting log.
 
 ## Local Setup
 
