@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: twitch-analyze
+spec:
+  selector:
+    app: worker
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: twitch-analyze
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: twitch-analyze-backend:local
+          imagePullPolicy: Never
+          command:
+            - python
+            - -m
+            - app.workers.clickhouse_consumer
+          ports:
+            - containerPort: 9101
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          readinessProbe:
+            tcpSocket:
+              port: 9101
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 9101
+            initialDelaySeconds: 45
+            periodSeconds: 10

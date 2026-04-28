@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: twitch-analyze
+data:
+  APP_ENV: local-k8s
+  LOG_LEVEL: INFO
+  TWITCH_INGESTION_MODE: irc
+  TWITCH_CHANNELS: ""
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  KAFKA_CHAT_TOPIC: twitch.chat.messages
+  KAFKA_CONSUMER_GROUP: clickhouse-chat-writer
+  CLICKHOUSE_HOST: clickhouse
+  CLICKHOUSE_PORT: "8123"
+  CLICKHOUSE_USERNAME: default
+  CLICKHOUSE_DATABASE: twitch_analyze
+  RECENT_MESSAGE_LIMIT: "500"
+  ENABLE_TWITCH_INGESTION: "true"
+  CORS_ORIGINS: http://localhost:5173,http://localhost:30080
+  VITE_BACKEND_PROXY_TARGET: http://backend:8000
+  VITE_BACKEND_WS_PROXY_TARGET: ws://backend:8000

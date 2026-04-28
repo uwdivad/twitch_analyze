@@ -40,6 +40,17 @@ See [docs/architecture-notes.md](docs/architecture-notes.md), [docs/project-flow
    - Prometheus: http://localhost:9090
    - Grafana: http://localhost:3000
 
+## Kubernetes Practice
+
+Docker Compose remains the fastest local development path. A Docker Desktop Kubernetes baseline is available under [k8s/local](k8s/local) for production-behavior practice:
+
+```bash
+docker build -t twitch-analyze-backend:local ./backend
+docker build -t twitch-analyze-frontend:local ./frontend
+kubectl apply -f k8s/local/namespace.yaml
+kubectl apply -f k8s/local/
+```
+
 ## Twitch Ingestion
 
 The default ingestion mode is Twitch IRC:

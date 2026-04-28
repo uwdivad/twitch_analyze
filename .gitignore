@@ -14,3 +14,4 @@ coverage/
 clickhouse_data/
 kafka_data/
 zookeeper_data/
+k8s/local/secret.yaml

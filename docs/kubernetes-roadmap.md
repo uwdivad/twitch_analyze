@@ -24,7 +24,9 @@ For simple local restarts, Docker Compose `restart` policies are enough. Kuberne
 
 Use Docker Desktop Kubernetes.
 
-Add a `k8s/local/` directory with plain manifests before introducing Helm or Kustomize.
+Status: implemented as plain manifests in `k8s/local/`.
+
+Use plain manifests before introducing Helm or Kustomize.
 
 Initial files:
 
@@ -34,7 +36,9 @@ k8s/
     namespace.yaml
     configmap.yaml
     secret.example.yaml
+    zookeeper.yaml
     kafka.yaml
+    clickhouse-init-configmap.yaml
     clickhouse.yaml
     backend.yaml
     worker.yaml
