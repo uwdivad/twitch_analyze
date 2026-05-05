@@ -2,13 +2,22 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from app.api.routes import recent_messages
+from app.api.routes import message_total, recent_messages
 from app.models.chat import ChatMessage
 
 
 class FailingClickHouse:
     async def recent_messages(self, **_kwargs):
         raise RuntimeError("query failed")
+
+    async def message_total(self, **_kwargs):
+        raise RuntimeError("query failed")
+
+
+class CountingClickHouse:
+    async def message_total(self, **kwargs):
+        assert kwargs == {"channel": "example", "session_id": None}
+        return 42
 
 
 class FakeHub:
@@ -42,3 +51,25 @@ async def test_recent_messages_falls_back_to_hub_when_clickhouse_fails() -> None
 
     assert len(messages) == 1
     assert messages[0].message_text == "hello"
+
+
+@pytest.mark.anyio
+async def test_message_total_returns_clickhouse_count() -> None:
+    total = await message_total(
+        channel="example",
+        session_id=None,
+        clickhouse=CountingClickHouse(),
+    )
+
+    assert total.count == 42
+
+
+@pytest.mark.anyio
+async def test_message_total_returns_zero_when_clickhouse_fails() -> None:
+    total = await message_total(
+        channel="example",
+        session_id=None,
+        clickhouse=FailingClickHouse(),
+    )
+
+    assert total.count == 0

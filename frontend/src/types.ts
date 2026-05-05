@@ -26,6 +26,12 @@ export type VolumePoint = {
   unique_chatter_count: number;
 };
 
+export type MessageTotal = {
+  count: number;
+};
+
+export type ChannelVolumeSeries = Record<string, VolumePoint[]>;
+
 export type TopItem = {
   value: string;
   count: number;

@@ -138,6 +138,22 @@ class ClickHouseRepository:
         ]
         return list(reversed(rows))
 
+    async def message_total(
+        self,
+        channel: str | None = None,
+        session_id: str | None = None,
+    ) -> int:
+        where, params = self._message_filters(channel=channel, session_id=session_id)
+        query = f"""
+            SELECT count() AS message_count
+            FROM chat_messages
+            {where}
+        """
+        result = await self._query(query, params)
+        if not result.result_rows:
+            return 0
+        return int(result.result_rows[0][0])
+
     async def top_chatters(
         self,
         channel: str | None = None,

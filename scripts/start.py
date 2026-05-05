@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 FRONTEND = ROOT / "frontend"
 VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
-INFRA_SERVICES = ["zookeeper", "kafka", "clickhouse"]
+INFRA_SERVICES = ["zookeeper", "kafka", "clickhouse", "kafka-console"]
 
 
 def load_env_file(path: Path) -> dict[str, str]:
@@ -58,6 +58,15 @@ def ensure_env_file() -> None:
 
 
 def ensure_frontend_dependencies() -> None:
+    if shutil.which("npm") is None:
+        print(
+            "npm was not found on PATH. Install Node.js 22+ or start the frontend through Docker Compose:\n"
+            "  docker compose up --build frontend\n"
+            "On macOS with Homebrew, install Node with:\n"
+            "  brew install node",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     if (FRONTEND / "node_modules").exists():
         return
     print("frontend/node_modules is missing; running npm install...")
@@ -93,7 +102,7 @@ def wait_for_port(host: str, port: int, label: str, timeout_seconds: int = 90) -
 
 def start_infra() -> None:
     require_docker()
-    print("Starting Kafka and ClickHouse infrastructure...")
+    print("Starting Kafka, ClickHouse, and Kafka Console infrastructure...")
     subprocess.run(["docker", "compose", "up", "-d", *INFRA_SERVICES], cwd=ROOT, check=True)
 
     env = base_env()
@@ -104,6 +113,7 @@ def start_infra() -> None:
     print("Giving Kafka a few seconds to finish broker metadata startup...")
     time.sleep(8)
     wait_for_port(clickhouse_host, int(env.get("CLICKHOUSE_PORT", "8123")), "ClickHouse")
+    wait_for_port("localhost", 8080, "Kafka Console")
 
 
 def ensure_infra_reachable() -> None:
@@ -155,6 +165,13 @@ def command_for(service: str, install_frontend: bool) -> tuple[list[str], Path, 
     if service == "frontend":
         if install_frontend:
             ensure_frontend_dependencies()
+        elif shutil.which("npm") is None:
+            print(
+                "npm was not found on PATH. Install Node.js 22+ or run the frontend with Docker Compose:\n"
+                "  docker compose up --build frontend",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         env.setdefault("VITE_BACKEND_PROXY_TARGET", "http://localhost:8000")
         env.setdefault("VITE_BACKEND_WS_PROXY_TARGET", "ws://localhost:8000")
         return (["npm", "run", "dev", "--", "--host", "0.0.0.0"], FRONTEND, env)

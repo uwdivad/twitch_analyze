@@ -1,4 +1,5 @@
 import type { ChatMessage, TopItem, VolumePoint } from '../types';
+import { DEFAULT_VOLUME_WINDOW_MINUTES, RECENT_MESSAGE_LIMIT } from '../config';
 
 export function minuteBucket(value: string): string {
   const date = new Date(value);
@@ -9,7 +10,8 @@ export function minuteBucket(value: string): string {
 export function incrementVolume(
   current: VolumePoint[],
   message: ChatMessage,
-  minuteChatters: Map<string, Set<string>>
+  minuteChatters: Map<string, Set<string>>,
+  limit = DEFAULT_VOLUME_WINDOW_MINUTES
 ): VolumePoint[] {
   const bucket = minuteBucket(message.event_ts);
   const chatter = message.chatter_login || message.chatter_display_name || message.message_id;
@@ -30,7 +32,7 @@ export function incrementVolume(
         : point
     );
   }
-  return [...current, { bucket, message_count: 1, unique_chatter_count: 1 }].slice(-120);
+  return [...current, { bucket, message_count: 1, unique_chatter_count: 1 }].slice(-limit);
 }
 
 export function incrementTopItems(current: TopItem[], value: string): TopItem[] {
@@ -44,10 +46,34 @@ export function incrementTopItems(current: TopItem[], value: string): TopItem[] 
   return next.sort((a, b) => b.count - a.count).slice(0, 10);
 }
 
-export function buildVolumeFromMessages(messages: ChatMessage[]): VolumePoint[] {
+export function incrementTopItemsByCounts(current: TopItem[], counts: Map<string, number>): TopItem[] {
+  if (counts.size === 0) {
+    return current;
+  }
+
+  const next = new Map<string, number>();
+  for (const item of current) {
+    next.set(item.value, item.count);
+  }
+  for (const [value, count] of counts) {
+    if (value) {
+      next.set(value, (next.get(value) ?? 0) + count);
+    }
+  }
+
+  return [...next.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+}
+
+export function buildVolumeFromMessages(
+  messages: ChatMessage[],
+  limit = DEFAULT_VOLUME_WINDOW_MINUTES
+): VolumePoint[] {
   const minuteChatters = new Map<string, Set<string>>();
   return messages.reduce<VolumePoint[]>(
-    (current, message) => incrementVolume(current, message, minuteChatters),
+    (current, message) => incrementVolume(current, message, minuteChatters, limit),
     []
   );
 }
@@ -72,7 +98,7 @@ export function buildTopEmotesFromMessages(messages: ChatMessage[]): TopItem[] {
   }, []);
 }
 
-export function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[], limit = 150): ChatMessage[] {
+export function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[], limit = RECENT_MESSAGE_LIMIT): ChatMessage[] {
   const byId = new Map<string, ChatMessage>();
   for (const message of [...existing, ...incoming]) {
     byId.set(message.message_id, message);
@@ -82,7 +108,7 @@ export function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[], 
     .slice(-limit);
 }
 
-export function mergeVolumeSeries(...series: VolumePoint[][]): VolumePoint[] {
+export function mergeVolumeSeries(series: VolumePoint[][], limit = DEFAULT_VOLUME_WINDOW_MINUTES): VolumePoint[] {
   const byBucket = new Map<string, VolumePoint>();
 
   for (const points of series) {
@@ -103,5 +129,5 @@ export function mergeVolumeSeries(...series: VolumePoint[][]): VolumePoint[] {
 
   return [...byBucket.values()]
     .sort((a, b) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime())
-    .slice(-120);
+    .slice(-limit);
 }

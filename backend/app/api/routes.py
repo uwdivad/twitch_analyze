@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
 
-from app.models.chat import ChannelInfo, ChatMessage, TopItem, VolumePoint
+from app.models.chat import ChannelInfo, ChatMessage, MessageTotal, TopItem, VolumePoint
 from app.storage.clickhouse import ClickHouseRepository
 from app.storage.realtime import RealtimeHub
 
@@ -57,6 +57,19 @@ async def volume(
     except Exception:
         logger.exception("Failed to load volume analytics from ClickHouse")
         return []
+
+
+@router.get("/api/analytics/message-total", response_model=MessageTotal)
+async def message_total(
+    channel: str | None = None,
+    session_id: str | None = None,
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+) -> MessageTotal:
+    try:
+        return MessageTotal(count=await clickhouse.message_total(channel=channel, session_id=session_id))
+    except Exception:
+        logger.exception("Failed to load message total from ClickHouse")
+        return MessageTotal(count=0)
 
 
 @router.get("/api/analytics/top-chatters", response_model=list[TopItem])

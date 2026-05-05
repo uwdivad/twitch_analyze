@@ -9,10 +9,12 @@ flowchart LR
     kafka[(Kafka<br/>twitch.chat.messages)]
     consumer[ClickHouse Consumer<br/>Batch Writer]
     clickhouse[(ClickHouse)]
+    caddy[Caddy Reverse Proxy<br/>AWS/production Compose]
     api[FastAPI Query API]
     realtime[FastAPI Realtime WebSocket]
     react[React Dashboard]
     llm[Optional LLM Summary Worker]
+    console[Redpanda Console]
     prometheus[Prometheus]
     grafana[Grafana]
 
@@ -22,13 +24,17 @@ flowchart LR
 
     kafka -->|batched consume| consumer
     consumer -->|batched inserts| clickhouse
+    console -.->|inspect topics/messages<br/>offsets + consumer groups| kafka
 
     kafka -.->|future consumer| llm
     llm -.->|interval summaries| clickhouse
 
     clickhouse -->|historical queries| api
+    caddy -->|/api + /health| api
+    caddy -->|/ws| realtime
+    caddy -->|static app| react
     api -->|REST responses| react
-    realtime -->|live feed + chart deltas| react
+    realtime -->|live messages + status events| react
 
     api -.->|/metrics| prometheus
     consumer -.->|/metrics| prometheus
@@ -51,9 +57,8 @@ sequenceDiagram
     Ingest->>Ingest: attach channel/session metadata
     Ingest->>Kafka: publish message
     Kafka-->>Consumer: consume in batches
-    Consumer->>Consumer: dedupe by message_id/event metadata
     Consumer->>CH: batch insert chat_messages
-    Consumer->>CH: update/insert interval analytics
+    Consumer->>Kafka: commit offsets after successful insert
 ```
 
 ## Realtime Frontend Flow
@@ -75,9 +80,11 @@ sequenceDiagram
 
     Twitch->>Ingest: new chat message
     Ingest->>WS: broadcast live message
-    Ingest->>WS: broadcast aggregate delta
-    WS-->>UI: update chat feed
-    WS-->>UI: update charts/counters
+    WS-->>UI: queue live message
+    UI->>UI: flush queued messages at selected display cadence
+    UI->>API: periodically refresh analytics at selected display cadence
+    API->>CH: query recent messages and aggregates
+    API-->>UI: update feed, charts, and counters
 ```
 
 ## ClickHouse Data Shape
@@ -142,10 +149,16 @@ erDiagram
     }
 ```
 
+Current implementation writes `chat_messages`. `channels`, `stream_sessions`, `chat_interval_stats`, and `chat_summaries` describe the intended model for later persistence and rollup work.
+
 ## Flow Notes
 
 - Kafka is required in the main ingestion path so the project exercises durable streamed-data handling from the beginning.
 - ClickHouse is the analytical store for append-only chat events, rollups, and summaries.
 - Realtime browser connections are optional. Ingestion and persistence continue even if no React dashboard is open.
+- The React dashboard can show all channels together or filter to one channel. It batches live display updates, supports configurable display cadence, and can hide the live feed to reduce browser load.
+- Docker Compose persists local ClickHouse data in the `clickhouse-data` named volume.
+- Redpanda Console is available at `http://localhost:8080` for Kafka topic, message, offset, and consumer-group inspection.
+- The minimal-cost AWS deployment keeps Compose, adds Caddy as the public reverse proxy, and keeps admin/data services private on the host.
 - Relational storage is deferred and can later own transactional app metadata without replacing Kafka or ClickHouse.
 - Prometheus scrapes backend, worker, and Kafka exporter metrics. Grafana provides the operational dashboard.

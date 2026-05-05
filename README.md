@@ -16,6 +16,8 @@ Twitch IRC or EventSub
 
 See [docs/architecture-notes.md](docs/architecture-notes.md), [docs/project-flow.md](docs/project-flow.md), [docs/kubernetes-roadmap.md](docs/kubernetes-roadmap.md), and [docs/troubleshooting-log.md](docs/troubleshooting-log.md) for design notes, diagrams, the Kubernetes learning path, and the running troubleshooting log.
 
+For a minimal-cost AWS learning/staging deployment, see [docs/aws-deployment.md](docs/aws-deployment.md). That path uses one EC2 instance with Docker Compose, Caddy, Kafka, ClickHouse, and the existing app containers.
+
 ## Local Setup
 
 1. Copy environment defaults:
@@ -32,13 +34,28 @@ See [docs/architecture-notes.md](docs/architecture-notes.md), [docs/project-flow
    docker compose up --build
    ```
 
+   For local script-based frontend runs, install Node.js/npm first. The frontend uses Vite and expects `npm` on `PATH`:
+
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
 4. Open:
 
    - Frontend: http://localhost:5173
    - Backend API: http://localhost:8000/docs
    - ClickHouse HTTP: http://localhost:8123
+   - Kafka Console: http://localhost:8080
    - Prometheus: http://localhost:9090
    - Grafana: http://localhost:3000
+
+Kafka Console is a Redpanda Console instance pointed at the local Kafka broker. Use it to inspect topics, message payloads, offsets, partitions, and consumer groups. The chat topic is:
+
+```text
+twitch.chat.messages
+```
 
 ## Kubernetes Practice
 
@@ -244,4 +261,14 @@ If Docker already created a ClickHouse container with different credentials and 
 ```bash
 docker compose down
 docker compose up --build --force-recreate
+```
+
+## ClickHouse Local Persistence
+
+The Docker Compose ClickHouse service stores local data in the named volume `clickhouse-data`, mounted at `/var/lib/clickhouse`.
+
+This means local ClickHouse data survives normal container stops, `docker compose down`, and service recreation. It is deleted if you explicitly remove Compose volumes:
+
+```bash
+docker compose down -v
 ```

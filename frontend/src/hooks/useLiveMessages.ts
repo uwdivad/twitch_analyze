@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type { ChatMessage, LiveEnvelope, SocketState } from '../types';
+import { compactChatMessage } from '../utils/messages';
 
 function websocketUrl(): string {
   const configured = import.meta.env.VITE_WS_BASE;
@@ -32,7 +33,7 @@ export function useLiveMessages({ activeChannel, onMessage }: UseLiveMessagesArg
         return;
       }
 
-      const message = envelope.payload;
+      const message = compactChatMessage(envelope.payload);
       if (!activeChannel || message.channel_login === activeChannel) {
         onMessage(message);
       }

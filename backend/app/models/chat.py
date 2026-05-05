@@ -55,6 +55,10 @@ class VolumePoint(BaseModel):
     unique_chatter_count: int
 
 
+class MessageTotal(BaseModel):
+    count: int
+
+
 class TopItem(BaseModel):
     value: str
     count: int

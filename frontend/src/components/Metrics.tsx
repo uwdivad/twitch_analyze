@@ -11,7 +11,7 @@ type MetricsProps = {
 export function Metrics({ messageTotal, uniqueChatters, latestRate, peakMinute }: MetricsProps) {
   return (
     <section className="metrics">
-      <Metric icon={<Activity size={18} />} label="Recent Messages" value={messageTotal.toLocaleString()} />
+      <Metric icon={<Activity size={18} />} label="Total Messages" value={messageTotal.toLocaleString()} />
       <Metric icon={<Users size={18} />} label="Recent Chatters" value={uniqueChatters.toLocaleString()} />
       <Metric icon={<Hash size={18} />} label="Latest Minute" value={latestRate.toLocaleString()} />
       <Metric icon={<BarChart3 size={18} />} label="Peak Minute" value={peakMinute.toLocaleString()} />

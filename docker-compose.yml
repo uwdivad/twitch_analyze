@@ -39,6 +39,7 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-twitch_analyze}
     volumes:
+      - clickhouse-data:/var/lib/clickhouse
       - ./sql/init-clickhouse.sql:/docker-entrypoint-initdb.d/init-clickhouse.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
@@ -100,6 +101,17 @@ services:
     ports:
       - "9308:9308"
 
+  kafka-console:
+    image: redpandadata/console:v2.8.5
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKERS: kafka:29092
+    ports:
+      - "8080:8080"
+
   prometheus:
     image: prom/prometheus:v2.55.1
     depends_on:
@@ -131,6 +143,7 @@ services:
   frontend:
     build:
       context: ./frontend
+      target: dev
     depends_on:
       - backend
     ports:
@@ -143,3 +156,6 @@ services:
       - ./frontend/index.html:/app/index.html
       - ./frontend/vite.config.ts:/app/vite.config.ts
     command: npm run dev -- --host 0.0.0.0
+
+volumes:
+  clickhouse-data:

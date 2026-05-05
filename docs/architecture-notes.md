@@ -12,6 +12,7 @@ Build a Twitch chat ingestion and analytics platform to practice handling larger
 - Realtime frontend updates: optional user-facing live dashboard, backed by backend WebSocket events.
 - Database direction: ClickHouse for analytical event storage.
 - Stream buffer: Kafka is required for v1 because the project is intended for scale practice.
+- Kafka inspection: Redpanda Console is included in the local Docker Compose stack.
 - Relational database: deferred until a later feature area, such as app users, saved dashboards, OAuth management, permissions, or billing.
 
 ## Core Pipeline
@@ -29,6 +30,12 @@ Twitch IRC or EventSub
 Kafka is used as a durable buffer and replay layer between ingestion and database writes. It decouples Twitch message ingestion from ClickHouse persistence, absorbs traffic bursts, supports replay after schema/parser changes, and allows additional downstream consumers later.
 
 ClickHouse is used as the primary analytical database because Twitch chat messages are append-heavy, event-based, time-windowed, and rarely updated after ingestion.
+
+## Deployment Direction
+
+Docker Compose remains the local development baseline. The lowest-cost AWS learning/staging deployment runs the same stack on a single EC2 instance with a production Compose override and Caddy as the public reverse proxy. Only ports `80`, `443`, and SSH from a trusted IP should be public; Grafana, Prometheus, Kafka Console, Kafka, and ClickHouse stay private to the host or Docker network.
+
+EKS remains the Kubernetes learning and scale-up path. For a production SLO, Kafka should move to Amazon MSK or another managed Kafka service, and ClickHouse should move to ClickHouse Cloud or an actively operated ClickHouse cluster.
 
 ## Data Organization
 
@@ -92,6 +99,8 @@ Kafka is useful here because it provides:
 - decoupling between Twitch ingestion and ClickHouse writes
 - a clean path for later consumers such as summaries, moderation signals, search indexing, and machine-learning features
 
+Local Docker Compose includes Redpanda Console at `http://localhost:8080` for inspecting topics, messages, offsets, partitions, and consumer groups. It connects to the local broker through `kafka:29092`.
+
 ## ClickHouse Notes
 
 ClickHouse is a column-oriented analytical database. It is a strong fit for queries such as:
@@ -106,6 +115,8 @@ ClickHouse is a column-oriented analytical database. It is a strong fit for quer
 It is less ideal for transactional application data, frequent row updates, strict relational constraints, and heavily normalized workflows. A relational database can be added later for app metadata without replacing ClickHouse as the analytics store.
 
 The backend serializes queries through the shared ClickHouse client because `clickhouse-connect` sessions do not support concurrent queries. Dashboard endpoints should fail soft: recent messages can fall back to the live in-memory buffer, and analytics endpoints can return empty lists while logging ClickHouse errors.
+
+In Docker Compose, ClickHouse data is stored in the named volume `clickhouse-data` mounted at `/var/lib/clickhouse`. This keeps local analytical data across container recreation unless Compose volumes are explicitly removed.
 
 Likely tables:
 
@@ -130,10 +141,9 @@ The frontend should be able to update in realtime as messages arrive, but ingest
 Backend WebSocket events should stream:
 
 - individual normalized chat messages for the live feed
-- aggregate deltas for charts
 - channel/session status events
 
-The frontend should use live events for immediate updates and historical API queries for page reloads, late joins, filters, and backfills.
+The frontend queues live WebSocket messages and flushes them into React state at a user-selected display cadence. Historical API queries supply page reloads, late joins, filters, chart windows, and periodic backfills. Dashboard controls can show all channels together or filter to one channel. The browser can hide the live feed and renders only a capped set of latest feed rows to reduce renderer pressure during high-volume chat.
 
 ## Monitoring
 
@@ -144,6 +154,8 @@ Prometheus should scrape:
 - FastAPI backend `/metrics`
 - ClickHouse consumer `/metrics`
 - Kafka exporter metrics
+
+Redpanda Console is available separately for interactive Kafka inspection, not Prometheus scraping.
 
 Grafana should show:
 
