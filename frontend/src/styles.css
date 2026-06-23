@@ -94,13 +94,13 @@ h1 {
   background: #18181b;
 }
 
-.controls label {
+.controls > label {
   display: grid;
   gap: 6px;
   min-width: 240px;
 }
 
-.controls label span {
+.controls > label span {
   color: #adadb8;
   font-size: 13px;
   font-weight: 600;
