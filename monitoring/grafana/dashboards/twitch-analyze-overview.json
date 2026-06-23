@@ -33,8 +33,8 @@
       "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
       "id": 3,
       "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showPercentChange": false, "textMode": "auto", "wideLayout": true},
-      "targets": [{"expr": "twitch_websocket_clients", "legendFormat": "clients", "refId": "A"}],
-      "title": "Frontend WebSocket Clients",
+      "targets": [{"expr": "twitch_sse_clients", "legendFormat": "clients", "refId": "A"}],
+      "title": "Frontend SSE Clients",
       "type": "stat"
     },
     {

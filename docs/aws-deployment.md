@@ -55,7 +55,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
-Caddy exposes the application on ports `80` and `443`. It proxies `/api`, `/health`, and `/ws` to the backend and proxies all other paths to the production frontend container.
+Caddy exposes the application on ports `80` and `443`. It proxies `/api` (including the `/api/messages/stream` SSE endpoint) and `/health` to the backend and proxies all other paths to the production frontend container.
 
 ## Admin Access
 

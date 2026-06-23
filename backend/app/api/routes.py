@@ -3,7 +3,8 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.core.config import Settings, get_settings
 from app.models.chat import (
@@ -149,6 +150,18 @@ async def volume(
         return []
 
 
+@router.get("/api/analytics/volume-by-channel", response_model=dict[str, list[VolumePoint]])
+async def volume_by_channel(
+    limit: int = Query(default=120, ge=1, le=1440),
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+) -> dict[str, list[VolumePoint]]:
+    try:
+        return await clickhouse.volume_by_minute_for_channels(limit=limit)
+    except Exception:
+        logger.exception("Failed to load per-channel volume analytics from ClickHouse")
+        return {}
+
+
 @router.get("/api/analytics/message-total", response_model=MessageTotal)
 async def message_total(
     channel: str | None = None,
@@ -253,12 +266,25 @@ async def generate_summary(
         raise HTTPException(status_code=500, detail="Failed to generate chat summary") from exc
 
 
-@router.websocket("/ws/messages")
-async def message_socket(websocket: WebSocket) -> None:
-    hub: RealtimeHub = websocket.app.state.realtime_hub
-    await hub.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await hub.disconnect(websocket)
+@router.get("/api/messages/stream")
+async def message_stream(request: Request, hub: RealtimeHub = Depends(get_hub)) -> StreamingResponse:
+    queue = await hub.subscribe()
+
+    async def event_source():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {data}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            await hub.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

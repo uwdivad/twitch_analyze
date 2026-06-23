@@ -12,6 +12,11 @@ export const LIVE_UPDATE_INTERVAL_OPTIONS = [
 
 export const DEFAULT_LIVE_UPDATE_INTERVAL_MS = 10_000;
 
+// The live feed flushes at `liveUpdateIntervalMs`, but a full dashboard reload is a much
+// heavier operation (several network requests + a full state replace). Floor its cadence
+// so picking a fast "Live" display interval doesn't also flood the backend with reloads.
+export const MIN_DASHBOARD_RELOAD_INTERVAL_MS = 10_000;
+
 export const VOLUME_WINDOW_OPTIONS = [
   { label: '15m', minutes: 15 },
   { label: '1h', minutes: 60 },

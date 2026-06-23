@@ -31,6 +31,7 @@ export function LiveFeed({ activeChannel, messages }: LiveFeedProps) {
           visibleMessages.map((message) => (
             <article key={`${message.message_id}-${message.received_at}`} className="message-row">
               <time>{formatTime(message.event_ts)}</time>
+              <span className="message-channel">{message.channel_display_name || message.channel_login}</span>
               <strong>{message.chatter_display_name || message.chatter_login}</strong>
               <p>{message.message_text}</p>
             </article>

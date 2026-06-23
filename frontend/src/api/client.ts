@@ -11,7 +11,7 @@ import type {
 import { RECENT_MESSAGE_LIMIT } from '../config';
 import { compactChatMessages } from '../utils/messages';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`);
@@ -51,35 +51,18 @@ function appendLimit(query: string, limit: number): string {
 }
 
 export async function loadDashboardData(channel: string, volumeWindowMinutes: number) {
-  const channels = await getJson<ChannelInfo[]>('/api/channels');
   const query = channelQuery(channel);
-  const [messages, volume, messageTotal, topChatters, topEmotes] = await Promise.all([
+  const [channels, messages, volume, messageTotal, topChatters, topEmotes, channelVolumes] = await Promise.all([
+    getJson<ChannelInfo[]>('/api/channels'),
     getJson<ChatMessage[]>(`/api/messages/recent${appendLimit(query, RECENT_MESSAGE_LIMIT)}`),
     getJson<VolumePoint[]>(`/api/analytics/volume${appendLimit(query, volumeWindowMinutes)}`),
-    channel
-      ? getJson<MessageTotal>(`/api/analytics/message-total${query}`)
-      : Promise.all(
-          channels.map((channelInfo) =>
-            getJson<MessageTotal>(`/api/analytics/message-total${channelQuery(channelInfo.channel_login)}`)
-          )
-        ).then((totals) => ({
-          count: totals.reduce((sum, total) => sum + total.count, 0)
-        })),
+    getJson<MessageTotal>(`/api/analytics/message-total${query}`),
     getJson<TopItem[]>(`/api/analytics/top-chatters${appendLimit(query, 10)}`),
-    getJson<TopItem[]>(`/api/analytics/top-emotes${appendLimit(query, 10)}`)
+    getJson<TopItem[]>(`/api/analytics/top-emotes${appendLimit(query, 10)}`),
+    channel
+      ? Promise.resolve<ChannelVolumeSeries>({})
+      : getJson<ChannelVolumeSeries>(`/api/analytics/volume-by-channel?limit=${volumeWindowMinutes}`)
   ]);
-  const channelVolumes: ChannelVolumeSeries = channel
-    ? {}
-    : Object.fromEntries(
-        await Promise.all(
-          channels.map(async (channelInfo) => [
-            channelInfo.channel_login,
-            await getJson<VolumePoint[]>(
-              `/api/analytics/volume${appendLimit(channelQuery(channelInfo.channel_login), volumeWindowMinutes)}`
-            )
-          ])
-        )
-      );
 
   return {
     channels,

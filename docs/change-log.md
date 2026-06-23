@@ -354,3 +354,26 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
 ```
 
 Result: passed.
+
+## 2026-06-23 - Replace Live Feed WebSocket With SSE
+
+### Reason
+
+The live chat feed only ever pushed data from server to browser; the WebSocket handler never read anything meaningful from the client (it called `receive_text()` purely to detect disconnects). A one-directional channel doesn't need a bidirectional protocol, and WebSockets need explicit `Upgrade` handling in proxies/load balancers that plain HTTP doesn't.
+
+### Change
+
+Replaced `@router.websocket("/ws/messages")` with a Server-Sent Events endpoint at `GET /api/messages/stream` (`backend/app/api/routes.py`), backed by a `StreamingResponse` that emits `data: ...` frames and a `: keep-alive` comment every 15 seconds. `RealtimeHub` (`backend/app/storage/realtime.py`) now fans out to per-subscriber `asyncio.Queue` objects instead of holding raw `WebSocket` connections, and drops a subscriber if its queue fills up rather than letting one slow client stall broadcasts to everyone else. The frontend (`frontend/src/hooks/useLiveMessages.ts`) now uses `EventSource` instead of `WebSocket`. Renamed the `twitch_websocket_clients` Prometheus gauge to `twitch_sse_clients` and updated the Grafana panel. Removed the now-unused `/ws` proxy entries from `frontend/vite.config.ts` and `deploy/caddy/Caddyfile`.
+
+### Result
+
+The live feed now travels over plain HTTP, reconnects automatically via the browser's native `EventSource` retry behavior, and proxies through Caddy/Vite without any WebSocket-specific configuration. No behavior change for the dashboard itself.
+
+### Verification
+
+```bash
+cd backend && PYTHONPATH=. pytest
+cd frontend && npm run build
+```
+
+Result: passed. Also manually verified with `curl -D - http://127.0.0.1:8000/api/messages/stream` that the response is `200` with `content-type: text/event-stream` and a chunked body.

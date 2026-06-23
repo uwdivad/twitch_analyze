@@ -11,7 +11,7 @@ flowchart LR
     clickhouse[(ClickHouse)]
     caddy[Caddy Reverse Proxy<br/>AWS/production Compose]
     api[FastAPI Query API]
-    realtime[FastAPI Realtime WebSocket]
+    realtime[FastAPI Realtime SSE]
     react[React Dashboard]
     llm[Optional LLM Summary Worker]
     console[Redpanda Console]
@@ -31,7 +31,7 @@ flowchart LR
 
     clickhouse -->|historical queries| api
     caddy -->|/api + /health| api
-    caddy -->|/ws| realtime
+    caddy -->|/api/messages/stream| realtime
     caddy -->|static app| react
     api -->|REST responses| react
     realtime -->|live messages + status events| react
@@ -67,20 +67,20 @@ sequenceDiagram
 sequenceDiagram
     participant Twitch as Twitch IRC/EventSub
     participant Ingest as FastAPI Ingest Service
-    participant WS as FastAPI WebSocket
+    participant SSE as FastAPI SSE Stream
     participant UI as React Dashboard
     participant API as FastAPI Query API
     participant CH as ClickHouse
 
-    UI->>WS: connect to live updates
+    UI->>SSE: open EventSource connection
     UI->>API: fetch current channel/session state
     API->>CH: query recent/historical data
     CH-->>API: analytics results
     API-->>UI: initial dashboard data
 
     Twitch->>Ingest: new chat message
-    Ingest->>WS: broadcast live message
-    WS-->>UI: queue live message
+    Ingest->>SSE: broadcast live message
+    SSE-->>UI: queue live message
     UI->>UI: flush queued messages at selected display cadence
     UI->>API: periodically refresh analytics at selected display cadence
     API->>CH: query recent messages and aggregates

@@ -9,7 +9,7 @@ Build a Twitch chat ingestion and analytics platform to practice handling larger
 - Backend: FastAPI.
 - Frontend: React.
 - Twitch ingestion: Twitch IRC WebSocket by default, with EventSub retained as an optional mode.
-- Realtime frontend updates: optional user-facing live dashboard, backed by backend WebSocket events.
+- Realtime frontend updates: optional user-facing live dashboard, backed by backend Server-Sent Events (SSE).
 - Database direction: ClickHouse for analytical event storage.
 - Stream buffer: Kafka is required for v1 because the project is intended for scale practice.
 - Kafka inspection: Redpanda Console is included in the local Docker Compose stack.
@@ -138,12 +138,12 @@ Partitioning should be date-based, with the exact granularity chosen once expect
 
 The frontend should be able to update in realtime as messages arrive, but ingestion must continue even when no browser is connected.
 
-Backend WebSocket events should stream:
+The backend SSE stream should send:
 
 - individual normalized chat messages for the live feed
 - channel/session status events
 
-The frontend queues live WebSocket messages and flushes them into React state at a user-selected display cadence. Historical API queries supply page reloads, late joins, filters, chart windows, and periodic backfills. Dashboard controls can show all channels together or filter to one channel. The browser can hide the live feed and renders only a capped set of latest feed rows to reduce renderer pressure during high-volume chat.
+The frontend queues live SSE messages and flushes them into React state at a user-selected display cadence. Historical API queries supply page reloads, late joins, filters, chart windows, and periodic backfills. Dashboard controls can show all channels together or filter to one channel. The browser can hide the live feed and renders only a capped set of latest feed rows to reduce renderer pressure during high-volume chat.
 
 ## Monitoring
 
@@ -166,7 +166,7 @@ Grafana should show:
 - Kafka consumer lag
 - ClickHouse rows inserted per second
 - ClickHouse insert latency and errors
-- active frontend WebSocket clients
+- active frontend SSE clients
 
 ## Analytics Ideas
 

@@ -11,7 +11,7 @@ export function Topbar({ socketState }: TopbarProps) {
     <header className="topbar">
       <div>
         <h1>Twitch Analyze</h1>
-        <p>Kafka-backed Twitch chat ingestion with ClickHouse analytics.</p>
+        <p>View live aggregated chat data.</p>
       </div>
       <div className={`live-state ${socketState}`}>
         <Radio size={16} />

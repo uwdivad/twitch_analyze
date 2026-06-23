@@ -147,6 +147,29 @@ class ClickHouseRepository:
         ]
         return list(reversed(rows))
 
+    async def volume_by_minute_for_channels(self, limit: int = 120) -> dict[str, list[VolumePoint]]:
+        query = """
+            SELECT
+                channel_login,
+                toStartOfMinute(event_ts) AS bucket,
+                count() AS message_count,
+                uniqExact(chatter_user_id) AS unique_chatter_count
+            FROM chat_messages
+            GROUP BY channel_login, bucket
+            ORDER BY channel_login, bucket DESC
+            LIMIT %(limit)s BY channel_login
+        """
+        result = await self._query(query, {"limit": limit})
+        by_channel: dict[str, list[VolumePoint]] = {}
+        for row in result.result_rows:
+            channel_login = str(row[0])
+            by_channel.setdefault(channel_login, []).append(
+                VolumePoint(bucket=self._as_utc(row[1]), message_count=int(row[2]), unique_chatter_count=int(row[3]))
+            )
+        for points in by_channel.values():
+            points.reverse()
+        return by_channel
+
     async def message_total(
         self,
         channel: str | None = None,

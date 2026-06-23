@@ -1,15 +1,11 @@
 import React from 'react';
 
+import { API_BASE } from '../api/client';
 import type { ChatMessage, LiveEnvelope, SocketState } from '../types';
 import { compactChatMessage } from '../utils/messages';
 
-function websocketUrl(): string {
-  const configured = import.meta.env.VITE_WS_BASE;
-  if (configured) {
-    return configured;
-  }
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${protocol}://${window.location.host}/ws/messages`;
+function streamUrl(): string {
+  return `${API_BASE}/api/messages/stream`;
 }
 
 type UseLiveMessagesArgs = {
@@ -27,13 +23,15 @@ export function useLiveMessages({ activeChannel, enabled, onMessage }: UseLiveMe
       return;
     }
 
-    const socket = new WebSocket(websocketUrl());
     setSocketState('connecting');
+    const source = new EventSource(streamUrl());
 
-    socket.onopen = () => setSocketState('live');
-    socket.onclose = () => setSocketState('offline');
-    socket.onerror = () => setSocketState('offline');
-    socket.onmessage = (event) => {
+    source.onopen = () => setSocketState('live');
+    source.onerror = () => {
+      // EventSource auto-reconnects on transient errors; onopen fires again once it succeeds.
+      setSocketState(source.readyState === EventSource.CLOSED ? 'offline' : 'connecting');
+    };
+    source.onmessage = (event) => {
       const envelope = JSON.parse(event.data) as LiveEnvelope;
       if (!isChatMessageEnvelope(envelope)) {
         return;
@@ -45,7 +43,7 @@ export function useLiveMessages({ activeChannel, enabled, onMessage }: UseLiveMe
       }
     };
 
-    return () => socket.close();
+    return () => source.close();
   }, [activeChannel, enabled, onMessage]);
 
   return socketState;

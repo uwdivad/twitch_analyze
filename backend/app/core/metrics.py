@@ -45,9 +45,9 @@ CLICKHOUSE_BATCH_SIZE = Histogram(
     buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
 )
 
-WEBSOCKET_CLIENTS = Gauge(
-    "twitch_websocket_clients",
-    "Current connected frontend WebSocket clients.",
+SSE_CLIENTS = Gauge(
+    "twitch_sse_clients",
+    "Current connected frontend SSE clients.",
 )
 
 INGESTION_CONNECTED = Gauge(
