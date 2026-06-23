@@ -109,7 +109,7 @@ h1 {
 .toggle-control {
   display: grid;
   gap: 6px;
-  min-width: 240px;
+  min-width: 100px;
 }
 
 .toggle-control > span {
