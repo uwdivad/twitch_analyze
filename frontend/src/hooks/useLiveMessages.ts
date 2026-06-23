@@ -14,13 +14,19 @@ function websocketUrl(): string {
 
 type UseLiveMessagesArgs = {
   activeChannel: string;
+  enabled: boolean;
   onMessage: (message: ChatMessage) => void;
 };
 
-export function useLiveMessages({ activeChannel, onMessage }: UseLiveMessagesArgs): SocketState {
+export function useLiveMessages({ activeChannel, enabled, onMessage }: UseLiveMessagesArgs): SocketState {
   const [socketState, setSocketState] = React.useState<SocketState>('connecting');
 
   React.useEffect(() => {
+    if (!enabled) {
+      setSocketState('offline');
+      return;
+    }
+
     const socket = new WebSocket(websocketUrl());
     setSocketState('connecting');
 
@@ -40,7 +46,7 @@ export function useLiveMessages({ activeChannel, onMessage }: UseLiveMessagesArg
     };
 
     return () => socket.close();
-  }, [activeChannel, onMessage]);
+  }, [activeChannel, enabled, onMessage]);
 
   return socketState;
 }

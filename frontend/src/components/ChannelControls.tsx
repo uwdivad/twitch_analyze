@@ -75,14 +75,16 @@ export function ChannelControls({
       </label>
       <div className="toggle-control">
         <span>Live feed</span>
-        <label className="switch">
-          <input
-            checked={showLiveFeed}
-            onChange={(event) => onShowLiveFeedChange(event.target.checked)}
-            type="checkbox"
-          />
-          <span className="slider"></span>
-        </label>
+        <div className="switch-wrapper">
+          <label className="switch">
+            <input
+              checked={showLiveFeed}
+              onChange={(event) => onShowLiveFeedChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span className="slider"></span>
+          </label>
+        </div>
       </div>
       <button disabled={isUpdating} onClick={onRefresh} type="button">
         <RefreshCw size={16} />

@@ -7,6 +7,7 @@ import {
   DEFAULT_LIVE_UPDATE_INTERVAL_MS,
   DEFAULT_VOLUME_WINDOW_MINUTES,
   MAX_LIVE_MESSAGES_PER_FLUSH,
+  MIN_DASHBOARD_RELOAD_INTERVAL_MS,
   VOLUME_WINDOW_OPTIONS
 } from './config';
 import { LiveFeed } from './components/LiveFeed';
@@ -153,14 +154,18 @@ export function App() {
   }, [activeChannel, applyVisibleMessages]);
 
   React.useEffect(() => {
+    if (!showLiveFeed) {
+      return;
+    }
     const interval = window.setInterval(flushPendingLiveMessages, liveUpdateIntervalMs);
     return () => {
       window.clearInterval(interval);
     };
-  }, [flushPendingLiveMessages, liveUpdateIntervalMs]);
+  }, [flushPendingLiveMessages, liveUpdateIntervalMs, showLiveFeed]);
 
   const socketState = useLiveMessages({
     activeChannel: '',
+    enabled: showLiveFeed,
     onMessage: handleLiveMessage
   });
 
@@ -173,25 +178,60 @@ export function App() {
     try {
       setError('');
       const dashboard = await loadDashboardData(activeChannel, volumeWindowMinutes);
+      
+      // Clean up in-memory live messages that are already fetched from ClickHouse
+      const latestDbTimestamp = dashboard.messages.length > 0
+        ? Math.max(...dashboard.messages.map(m => new Date(m.event_ts).getTime()))
+        : 0;
+        
+      for (const [channel, channelMsgs] of liveMessagesByChannel.current) {
+        liveMessagesByChannel.current.set(
+          channel,
+          channelMsgs.filter(m => new Date(m.event_ts).getTime() > latestDbTimestamp)
+        );
+      }
+
       const liveMessages = activeChannel
         ? liveMessagesByChannel.current.get(activeChannel) ?? []
         : Array.from(liveMessagesByChannel.current.values()).flat();
+        
       const mergedMessages = mergeMessages(dashboard.messages, liveMessages);
-      const liveVolume = buildVolumeFromMessages(mergedMessages, volumeWindowMinutes);
+      const liveVolume = buildVolumeFromMessages(liveMessages, volumeWindowMinutes);
       const volumeViewKey = `${activeChannel || 'all'}:${volumeWindowMinutes}`;
-      const isSameDisplayedChannel = displayedVolumeChannel.current === volumeViewKey;
 
       setChannels(dashboard.channels);
       setMessages(mergedMessages);
-      setMessageTotal(dashboard.messageTotal);
+      setMessageTotal(dashboard.messageTotal + liveMessages.length);
       setChannelVolumes(dashboard.channelVolumes);
-      setVolume((current) =>
-        isSameDisplayedChannel
-          ? mergeVolumeSeries([current, dashboard.volume, liveVolume], volumeWindowMinutes)
-          : mergeVolumeSeries([dashboard.volume, liveVolume], volumeWindowMinutes)
-      );
-      setTopChatters(dashboard.topChatters.length > 0 ? dashboard.topChatters : buildTopChattersFromMessages(mergedMessages));
-      setTopEmotes(dashboard.topEmotes.length > 0 ? dashboard.topEmotes : buildTopEmotesFromMessages(mergedMessages));
+      
+      // Merge only ClickHouse volume points with fresh memory-only volume points to avoid duplication
+      setVolume(mergeVolumeSeries([dashboard.volume, liveVolume], volumeWindowMinutes));
+      
+      // Combine ClickHouse top lists with counts from the active live messages in memory
+      const chatterCounts = new Map<string, number>();
+      const emoteCounts = new Map<string, number>();
+      for (const message of liveMessages) {
+        const chatter = message.chatter_login || message.chatter_display_name;
+        if (chatter) {
+          chatterCounts.set(chatter, (chatterCounts.get(chatter) ?? 0) + 1);
+        }
+        for (const emote of message.emotes) {
+          const label = String(emote.text ?? '');
+          if (label) {
+            emoteCounts.set(label, (emoteCounts.get(label) ?? 0) + 1);
+          }
+        }
+      }
+      
+      setTopChatters(incrementTopItemsByCounts(
+        dashboard.topChatters.length > 0 ? dashboard.topChatters : buildTopChattersFromMessages(dashboard.messages),
+        chatterCounts
+      ));
+      setTopEmotes(incrementTopItemsByCounts(
+        dashboard.topEmotes.length > 0 ? dashboard.topEmotes : buildTopEmotesFromMessages(dashboard.messages),
+        emoteCounts
+      ));
+      
       setSummaries(activeChannel ? await loadSummaries(activeChannel) : []);
       minuteChatters.current.clear();
       displayedVolumeChannel.current = volumeViewKey;
@@ -253,11 +293,13 @@ export function App() {
     return () => window.clearInterval(interval);
   }, [transcriptionJob]);
 
+  const dashboardReloadIntervalMs = Math.max(liveUpdateIntervalMs, MIN_DASHBOARD_RELOAD_INTERVAL_MS);
+
   React.useEffect(() => {
     loadDashboard();
-    const interval = window.setInterval(loadDashboard, liveUpdateIntervalMs);
+    const interval = window.setInterval(loadDashboard, dashboardReloadIntervalMs);
     return () => window.clearInterval(interval);
-  }, [loadDashboard, liveUpdateIntervalMs]);
+  }, [loadDashboard, dashboardReloadIntervalMs]);
 
   const uniqueChatters = React.useMemo(
     () => new Set(messages.map((message) => message.chatter_login)).size,
