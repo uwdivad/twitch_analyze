@@ -107,14 +107,69 @@ h1 {
 }
 
 .toggle-control {
+  display: grid;
+  gap: 6px;
   min-width: 120px;
 }
 
-.toggle-control input {
-  width: 40px;
-  height: 40px;
-  margin: 0;
-  accent-color: #9146ff;
+.toggle-control > span {
+  color: #adadb8;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Custom CSS Toggle Switch Slider */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 24px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #3b3b44;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #efeff1;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+input:checked + .slider {
+  background-color: #9146ff;
+}
+
+input:checked + .slider:before {
+  transform: translateX(24px);
+  background-color: #ffffff;
+}
+
+input:focus + .slider {
+  outline: 2px solid #bf94ff;
+  outline-offset: 2px;
 }
 
 select,
@@ -122,9 +177,10 @@ input,
 button {
   height: 40px;
   border: 1px solid #3b3b44;
-  border-radius: 4px;
+  border-radius: 6px;
   background: #0e0e10;
   color: #efeff1;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 select,
@@ -133,9 +189,9 @@ input {
 }
 
 select:hover,
-input:hover,
-button:hover:not(:disabled) {
+input:hover {
   border-color: #9146ff;
+  box-shadow: 0 0 8px rgba(145, 70, 255, 0.25);
 }
 
 select:focus,
@@ -155,10 +211,13 @@ button {
   color: #ffffff;
   font-weight: 700;
   cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
 }
 
 button:hover:not(:disabled) {
   background: #772ce8;
+  border-color: #772ce8;
+  box-shadow: 0 0 12px rgba(145, 70, 255, 0.5), 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 button:disabled,
@@ -200,9 +259,16 @@ button:disabled svg {
   min-height: 86px;
   padding: 16px;
   border: 1px solid #2f2b3a;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #18181b;
-  box-shadow: inset 3px 0 0 #9146ff;
+  box-shadow: inset 3px 0 0 #9146ff, 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.metric:hover {
+  transform: translateY(-2px);
+  border-color: rgba(145, 70, 255, 0.4);
+  box-shadow: inset 3px 0 0 #9146ff, 0 6px 16px rgba(0, 0, 0, 0.2), 0 0 8px rgba(145, 70, 255, 0.15);
 }
 
 .metric-icon {
@@ -238,8 +304,15 @@ button:disabled svg {
 
 .panel {
   border: 1px solid #2f2b3a;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #18181b;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.panel:hover {
+  border-color: rgba(145, 70, 255, 0.25);
+  box-shadow: 0 6px 24px rgba(145, 70, 255, 0.06), 0 4px 20px rgba(0, 0, 0, 0.25);
 }
 
 .panel-heading {
@@ -290,7 +363,8 @@ button:disabled svg {
   gap: 12px;
   min-height: 38px;
   padding: 8px;
-  border-radius: 4px;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, padding-left 0.15s ease;
 }
 
 .top-item:nth-child(odd) {
@@ -298,7 +372,8 @@ button:disabled svg {
 }
 
 .top-item:hover {
-  background: #26262c;
+  background: rgba(145, 70, 255, 0.12);
+  padding-left: 12px;
 }
 
 .top-item span {
@@ -510,12 +585,27 @@ button:disabled svg {
   scrollbar-color: #53535f #18181b;
 }
 
+@keyframes message-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+    background-color: rgba(145, 70, 255, 0.15);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    background-color: transparent;
+  }
+}
+
 .message-row {
   display: grid;
-  grid-template-columns: 88px 180px minmax(0, 1fr);
+  grid-template-columns: 80px 120px 150px minmax(0, 1fr);
   gap: 12px;
   padding: 10px 16px;
   border-bottom: 1px solid #26262c;
+  animation: message-fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transition: background-color 0.2s ease;
 }
 
 .message-row:hover {
@@ -525,6 +615,24 @@ button:disabled svg {
 .message-row time {
   color: #8a8a95;
   font-variant-numeric: tabular-nums;
+  align-self: center;
+}
+
+.message-row .message-channel {
+  overflow: hidden;
+  color: #00f593;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(0, 245, 147, 0.08);
+  padding: 2px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 245, 147, 0.15);
+  font-size: 12px;
+  font-weight: 600;
+  width: fit-content;
+  max-width: 100%;
+  text-align: center;
+  align-self: center;
 }
 
 .message-row strong {
@@ -532,12 +640,14 @@ button:disabled svg {
   color: #bf94ff;
   text-overflow: ellipsis;
   white-space: nowrap;
+  align-self: center;
 }
 
 .message-row p {
   min-width: 0;
   overflow-wrap: anywhere;
   color: #efeff1;
+  align-self: center;
 }
 
 .empty {
@@ -586,7 +696,7 @@ button:disabled svg {
   }
 
   .message-row {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1fr);
   }
 
   .message-row p {

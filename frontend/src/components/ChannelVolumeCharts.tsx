@@ -56,7 +56,8 @@ export function ChannelVolumeCharts({ channels, channelVolumes, windowLabel }: C
                       stroke="#bf94ff"
                       strokeWidth={2}
                       dot={false}
-                      isAnimationActive={false}
+                      isAnimationActive={true}
+                      animationDuration={300}
                     />
                   </LineChart>
                 </ResponsiveContainer>

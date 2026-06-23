@@ -30,8 +30,24 @@ export function VolumeChart({ volume, windowLabel }: VolumeChartProps) {
             <XAxis dataKey="label" tick={{ fill: '#adadb8', fontSize: 12 }} minTickGap={24} />
             <YAxis tick={{ fill: '#adadb8', fontSize: 12 }} allowDecimals={false} />
             <Tooltip contentStyle={{ background: '#18181b', border: '1px solid #9146ff' }} />
-            <Line type="monotone" dataKey="message_count" stroke="#9146ff" strokeWidth={2} dot />
-            <Line type="monotone" dataKey="unique_chatter_count" stroke="#00f593" strokeWidth={2} dot />
+            <Line
+              type="monotone"
+              dataKey="message_count"
+              stroke="#9146ff"
+              strokeWidth={2}
+              dot={false}
+              isAnimationActive={true}
+              animationDuration={300}
+            />
+            <Line
+              type="monotone"
+              dataKey="unique_chatter_count"
+              stroke="#00f593"
+              strokeWidth={2}
+              dot={false}
+              isAnimationActive={true}
+              animationDuration={300}
+            />
           </LineChart>
         </ResponsiveContainer>
       )}
