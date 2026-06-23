@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="/opt/twitch_analyze"
+COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.gcp-lowcost.yml"
+REPO_URL="${repo_url}"
+REPO_ACCESS_TOKEN="${repo_access_token}"
+REPO_USERNAME="${repo_username}"
+
+if [ -n "$REPO_ACCESS_TOKEN" ] && [[ "$REPO_URL" == https://* ]]; then
+  REPO_WITHOUT_SCHEME="$${REPO_URL#https://}"
+  CLONE_URL="https://$${REPO_USERNAME}:$${REPO_ACCESS_TOKEN}@$${REPO_WITHOUT_SCHEME}"
+else
+  CLONE_URL="$REPO_URL"
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y ca-certificates curl git gnupg
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+. /etc/os-release
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<'JSONEOF'
+{
+  "max-concurrent-downloads": 1
+}
+JSONEOF
+systemctl enable --now docker
+systemctl restart docker
+
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+elif ! swapon --show=NAME | grep -qx /swapfile; then
+  swapon /swapfile
+fi
+
+mkdir -p "$APP_DIR"
+if [ -d "$APP_DIR/.git" ]; then
+  git -C "$APP_DIR" fetch --prune origin
+else
+  rm -rf "$APP_DIR"
+  git clone "$CLONE_URL" "$APP_DIR"
+fi
+git -C "$APP_DIR" remote set-url origin "$CLONE_URL"
+git -C "$APP_DIR" checkout "${repo_ref}"
+git -C "$APP_DIR" pull --ff-only origin "${repo_ref}" || true
+
+cat > "$APP_DIR/.env" <<'ENVEOF'
+APP_ENV=${app_env}
+LOG_LEVEL=${log_level}
+APP_DOMAIN=${domain}
+
+TWITCH_CLIENT_ID=${twitch_client_id}
+TWITCH_CLIENT_SECRET=${twitch_client_secret}
+TWITCH_ACCESS_TOKEN=${twitch_access_token}
+TWITCH_REFRESH_TOKEN=${twitch_refresh_token}
+TWITCH_USER_ID=${twitch_user_id}
+TWITCH_USERNAME=${twitch_username}
+TWITCH_CHANNELS=${twitch_channels}
+TWITCH_INGESTION_MODE=${twitch_mode}
+
+KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+KAFKA_CHAT_TOPIC=twitch.chat.messages
+KAFKA_CONSUMER_GROUP=clickhouse-chat-writer
+
+CLICKHOUSE_HOST=clickhouse
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_USERNAME=default
+CLICKHOUSE_PASSWORD=${clickhouse_password}
+CLICKHOUSE_DATABASE=twitch_analyze
+
+RECENT_MESSAGE_LIMIT=${recent_limit}
+ENABLE_TWITCH_INGESTION=true
+CORS_ORIGINS=https://${domain}
+
+OPENAI_API_KEY=${openai_api_key}
+OPENAI_SUMMARY_MODEL=${openai_model}
+OPENAI_SUMMARY_MAX_MESSAGES=${openai_max_messages}
+ENVEOF
+chmod 600 "$APP_DIR/.env"
+
+cat > "$APP_DIR/docker-compose.gcp-lowcost.yml" <<'YAMLEOF'
+services:
+  kafka:
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms128m -Xmx256m"
+      KAFKA_TRANSACTION_STATE_LOG_NUM_PARTITIONS: 1
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec '</dev/tcp/localhost/9092'"]
+      interval: 15s
+      timeout: 60s
+      retries: 20
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  clickhouse:
+    environment:
+      CLICKHOUSE_MAX_MEMORY_USAGE: 512000000
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
+      interval: 15s
+      timeout: 60s
+      retries: 20
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  backend:
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  worker:
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  frontend:
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  caddy:
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  kafka-exporter:
+    profiles: ["disabled"]
+
+  kafka-console:
+    profiles: ["disabled"]
+
+  prometheus:
+    profiles: ["disabled"]
+
+  grafana:
+    profiles: ["disabled"]
+YAMLEOF
+
+cd "$APP_DIR"
+docker compose $COMPOSE_FILES config --quiet
+for attempt in 1 2 3 4 5; do
+  if docker compose $COMPOSE_FILES up -d --build; then
+    exit 0
+  fi
+  sleep $((attempt * 20))
+done
+
+docker compose $COMPOSE_FILES up -d --build

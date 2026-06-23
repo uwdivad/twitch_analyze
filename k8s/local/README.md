@@ -78,4 +78,4 @@ Delete the local cluster resources:
 kubectl delete namespace twitch-analyze
 ```
 
-The Kafka, Zookeeper, and ClickHouse PersistentVolumeClaims belong to the namespace. Deleting the namespace deletes those local data volumes too.
+The Kafka and ClickHouse PersistentVolumeClaims belong to the namespace. Deleting the namespace deletes those local data volumes too.

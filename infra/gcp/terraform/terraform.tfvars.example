@@ -1,0 +1,20 @@
+project_id       = "your-gcp-project-id"
+region           = "us-central1"
+zone             = "us-central1-a"
+domain           = "your-domain.example.com"
+admin_ssh_cidr   = "203.0.113.10/32"
+twitch_channels  = "some_channel,another_channel"
+
+# Use a strong value in local terraform.tfvars. Do not commit real secrets.
+clickhouse_password = "replace-with-a-strong-password"
+
+# IRC mode can run anonymously with only twitch_channels configured.
+twitch_ingestion_mode = "irc"
+
+# Required if repo_url points at a private GitHub repository.
+# repo_access_token = "github_pat_or_fine_grained_token"
+
+# Optional. Required only when using manual LLM chat summaries.
+# openai_api_key = "sk-proj-your-openai-api-key"
+# openai_summary_model = "gpt-5.2"
+# openai_summary_max_messages = 250

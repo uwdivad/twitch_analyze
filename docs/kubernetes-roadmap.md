@@ -36,7 +36,6 @@ k8s/
     namespace.yaml
     configmap.yaml
     secret.example.yaml
-    zookeeper.yaml
     kafka.yaml
     clickhouse-init-configmap.yaml
     clickhouse.yaml

@@ -38,6 +38,8 @@ async def lifespan(app: FastAPI):
     )
     app.state.kafka = KafkaChatProducer(settings.kafka_bootstrap_servers, settings.kafka_chat_topic)
     app.state.ingestion_task = None
+    app.state.transcription_jobs = {}
+    app.state.transcription_tasks = {}
 
     await app.state.kafka.start()
 
@@ -98,6 +100,12 @@ async def lifespan(app: FastAPI):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        transcription_tasks = list(app.state.transcription_tasks.values())
+        for transcription_task in transcription_tasks:
+            transcription_task.cancel()
+        for transcription_task in transcription_tasks:
+            with suppress(asyncio.CancelledError):
+                await transcription_task
         await app.state.kafka.stop()
 
 

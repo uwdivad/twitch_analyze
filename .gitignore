@@ -15,3 +15,8 @@ clickhouse_data/
 kafka_data/
 zookeeper_data/
 k8s/local/secret.yaml
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.auto.tfvars

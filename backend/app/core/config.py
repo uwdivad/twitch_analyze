@@ -21,7 +21,9 @@ class Settings(BaseSettings):
 
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_chat_topic: str = "twitch.chat.messages"
+    kafka_transcript_topic: str = "twitch.stream.transcripts"
     kafka_consumer_group: str = "clickhouse-chat-writer"
+    kafka_transcript_consumer_group: str = "clickhouse-transcript-writer"
 
     clickhouse_host: str = "localhost"
     clickhouse_port: int = 8123
@@ -32,10 +34,24 @@ class Settings(BaseSettings):
     recent_message_limit: int = Field(default=500, ge=1, le=10_000)
     enable_twitch_ingestion: bool = True
     cors_origins: str = "http://localhost:5173"
+    openai_api_key: str = ""
+    openai_summary_model: str = "gpt-5.2"
+    openai_summary_max_messages: int = Field(default=250, ge=25, le=1000)
+    openai_transcription_model: str = "gpt-4o-mini-transcribe"
+    enable_audio_capture: bool = False
+    audio_capture_channels: str = ""
+    audio_segment_seconds: int = Field(default=30, ge=5, le=300)
+    audio_retention_minutes: int = Field(default=60, ge=1, le=1440)
+    audio_chunk_dir: str = "/tmp/twitch-audio"
 
     @property
     def channel_logins(self) -> list[str]:
         return [part.strip().lower() for part in self.twitch_channels.split(",") if part.strip()]
+
+    @property
+    def audio_channel_logins(self) -> list[str]:
+        channels = self.audio_capture_channels or self.twitch_channels
+        return [part.strip().lower() for part in channels.split(",") if part.strip()]
 
     @property
     def cors_origin_list(self) -> list[str]:

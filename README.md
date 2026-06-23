@@ -18,6 +18,8 @@ See [docs/architecture-notes.md](docs/architecture-notes.md), [docs/project-flow
 
 For a minimal-cost AWS learning/staging deployment, see [docs/aws-deployment.md](docs/aws-deployment.md). That path uses one EC2 instance with Docker Compose, Caddy, Kafka, ClickHouse, and the existing app containers.
 
+For a near-free GCP experiment managed with Terraform, see [docs/gcp-terraform-deployment.md](docs/gcp-terraform-deployment.md). That path targets one Compute Engine `e2-micro` VM and disables optional monitoring services.
+
 ## Local Setup
 
 1. Copy environment defaults:
@@ -162,6 +164,19 @@ http://localhost:9101/metrics
 The React analytics chart updates from historical ClickHouse queries and from live WebSocket messages. If ClickHouse has not received data yet, live messages still update the chart immediately while the worker catches up.
 
 Dashboard API endpoints are resilient to temporary ClickHouse query errors: recent messages fall back to the in-memory live buffer, and analytics endpoints return empty lists while logging the backend exception. The ClickHouse repository serializes access through its shared client because `clickhouse-connect` does not allow concurrent queries in the same session.
+
+## Security Review
+
+Security status from the latest repo pass:
+
+- ✅ No real Twitch, OpenAI, GitHub, Terraform, or ClickHouse secrets were found in committed source files. Keep using `.env`, `terraform.tfvars`, and `k8s/local/secret.yaml` locally; those paths are ignored by git.
+- ✅ Frontend dependency audit passes after updating Vite to `8.0.16`.
+- ⚠️ The backend does not implement application-level authentication or authorization. Treat `/api/messages`, `/api/summaries/generate`, `/api/transcriptions/start`, `/metrics`, and `/ws/messages` as trusted-network endpoints unless an authenticated reverse proxy or API auth layer is added.
+- ⚠️ `docker-compose.yml` is a local development stack and publishes Kafka, ClickHouse, backend, metrics, Grafana, Prometheus, and Kafka Console ports. Do not expose it directly to the internet.
+- ⚠️ `docker-compose.prod.yml` removes public Kafka, ClickHouse, backend, and worker ports, but still exposes the frontend/API through Caddy. Add access control before using write, summary, or transcription endpoints in a shared or public deployment.
+- ⚠️ Local defaults use `CLICKHOUSE_PASSWORD=twitch_analyze` and Grafana `admin / admin`. Rotate both for any non-local environment.
+- ⚠️ Chat summaries and audio transcription send sampled chat/audio content to OpenAI when `OPENAI_API_KEY` and those features are enabled. Only enable them for channels and environments where that data flow is acceptable.
+- ⚠️ The GCP Terraform startup script writes sensitive values into instance startup metadata and the VM `.env`. Prefer short-lived tokens, least-privilege service accounts, and Secret Manager for production-grade deployments.
 
 ## Backend Commands
 

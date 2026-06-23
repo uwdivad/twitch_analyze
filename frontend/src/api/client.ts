@@ -1,4 +1,13 @@
-import type { ChannelInfo, ChannelVolumeSeries, ChatMessage, MessageTotal, TopItem, VolumePoint } from '../types';
+import type {
+  ChannelInfo,
+  ChannelVolumeSeries,
+  ChatMessage,
+  ChatSummary,
+  MessageTotal,
+  TopItem,
+  TranscriptionJob,
+  VolumePoint
+} from '../types';
 import { RECENT_MESSAGE_LIMIT } from '../config';
 import { compactChatMessages } from '../utils/messages';
 
@@ -8,6 +17,27 @@ async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`);
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const payload = await response.json();
+      detail = typeof payload.detail === 'string' ? payload.detail : detail;
+    } catch {
+      // Keep the HTTP status fallback when the response is not JSON.
+    }
+    throw new Error(detail);
   }
   return response.json();
 }
@@ -60,4 +90,27 @@ export async function loadDashboardData(channel: string, volumeWindowMinutes: nu
     topChatters,
     topEmotes
   };
+}
+
+export async function loadSummaries(channel: string, limit = 10): Promise<ChatSummary[]> {
+  const query = appendLimit(channelQuery(channel), limit);
+  return getJson<ChatSummary[]>(`/api/summaries${query}`);
+}
+
+export async function generateSummary(channel: string, windowMinutes: number): Promise<ChatSummary> {
+  return postJson<ChatSummary>('/api/summaries/generate', {
+    channel,
+    window_minutes: windowMinutes
+  });
+}
+
+export async function startTranscription(channel: string, durationMinutes: number): Promise<TranscriptionJob> {
+  return postJson<TranscriptionJob>('/api/transcriptions/start', {
+    channel,
+    duration_minutes: durationMinutes
+  });
+}
+
+export async function loadTranscriptionJob(jobId: string): Promise<TranscriptionJob> {
+  return getJson<TranscriptionJob>(`/api/transcriptions/jobs/${encodeURIComponent(jobId)}`);
 }

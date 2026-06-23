@@ -85,3 +85,21 @@ CREATE TABLE IF NOT EXISTS twitch_analyze.chat_summaries
 ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(window_start)
 ORDER BY (channel_id, session_id, window_size, window_start, summary_id);
+
+CREATE TABLE IF NOT EXISTS twitch_analyze.stream_transcript_segments
+(
+    segment_id String,
+    channel_login LowCardinality(String),
+    session_id String,
+    segment_started_at DateTime64(3, 'UTC'),
+    segment_ended_at DateTime64(3, 'UTC'),
+    audio_path String,
+    transcript_text String,
+    model LowCardinality(String),
+    status LowCardinality(String),
+    error String,
+    created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(created_at)
+PARTITION BY toYYYYMM(segment_started_at)
+ORDER BY (channel_login, session_id, segment_started_at, segment_id);

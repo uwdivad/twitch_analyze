@@ -15,15 +15,9 @@ services:
       - caddy-data:/data
       - caddy-config:/config
 
-  zookeeper:
-    restart: unless-stopped
-    ports: !override []
-
   kafka:
     restart: unless-stopped
     ports: !override []
-    volumes: !override
-      - kafka-data:/var/lib/kafka/data
 
   clickhouse:
     restart: unless-stopped

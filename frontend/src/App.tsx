@@ -1,6 +1,6 @@
 import React from 'react';
 
-import { loadDashboardData } from './api/client';
+import { generateSummary, loadDashboardData, loadSummaries, loadTranscriptionJob, startTranscription } from './api/client';
 import { ChannelVolumeCharts } from './components/ChannelVolumeCharts';
 import { ChannelControls } from './components/ChannelControls';
 import {
@@ -11,11 +11,21 @@ import {
 } from './config';
 import { LiveFeed } from './components/LiveFeed';
 import { Metrics } from './components/Metrics';
+import { SummaryPanel } from './components/SummaryPanel';
 import { Topbar } from './components/Topbar';
 import { TopList } from './components/TopList';
+import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { VolumeChart } from './components/VolumeChart';
 import { useLiveMessages } from './hooks/useLiveMessages';
-import type { ChannelInfo, ChannelVolumeSeries, ChatMessage, TopItem, VolumePoint } from './types';
+import type {
+  ChannelInfo,
+  ChannelVolumeSeries,
+  ChatMessage,
+  ChatSummary,
+  TopItem,
+  TranscriptionJob,
+  VolumePoint
+} from './types';
 import {
   buildTopChattersFromMessages,
   buildTopEmotesFromMessages,
@@ -35,11 +45,17 @@ export function App() {
   const [channelVolumes, setChannelVolumes] = React.useState<ChannelVolumeSeries>({});
   const [topChatters, setTopChatters] = React.useState<TopItem[]>([]);
   const [topEmotes, setTopEmotes] = React.useState<TopItem[]>([]);
+  const [summaries, setSummaries] = React.useState<ChatSummary[]>([]);
   const [volumeWindowMinutes, setVolumeWindowMinutes] = React.useState<number>(DEFAULT_VOLUME_WINDOW_MINUTES);
   const [liveUpdateIntervalMs, setLiveUpdateIntervalMs] = React.useState<number>(DEFAULT_LIVE_UPDATE_INTERVAL_MS);
   const [showLiveFeed, setShowLiveFeed] = React.useState<boolean>(true);
   const [isDashboardUpdating, setIsDashboardUpdating] = React.useState<boolean>(false);
+  const [isSummaryGenerating, setIsSummaryGenerating] = React.useState<boolean>(false);
+  const [isTranscriptionStarting, setIsTranscriptionStarting] = React.useState<boolean>(false);
+  const [transcriptionJob, setTranscriptionJob] = React.useState<TranscriptionJob | null>(null);
   const [error, setError] = React.useState<string>('');
+  const [summaryError, setSummaryError] = React.useState<string>('');
+  const [transcriptionError, setTranscriptionError] = React.useState<string>('');
   const minuteChatters = React.useRef<Map<string, Set<string>>>(new Map());
   const liveMessagesByChannel = React.useRef<Map<string, ChatMessage[]>>(new Map());
   const pendingLiveMessages = React.useRef<ChatMessage[]>([]);
@@ -176,6 +192,7 @@ export function App() {
       );
       setTopChatters(dashboard.topChatters.length > 0 ? dashboard.topChatters : buildTopChattersFromMessages(mergedMessages));
       setTopEmotes(dashboard.topEmotes.length > 0 ? dashboard.topEmotes : buildTopEmotesFromMessages(mergedMessages));
+      setSummaries(activeChannel ? await loadSummaries(activeChannel) : []);
       minuteChatters.current.clear();
       displayedVolumeChannel.current = volumeViewKey;
     } catch (err) {
@@ -185,6 +202,56 @@ export function App() {
       setIsDashboardUpdating(false);
     }
   }, [activeChannel, volumeWindowMinutes]);
+
+  const handleGenerateSummary = React.useCallback(async (windowMinutes: number) => {
+    if (!activeChannel || isSummaryGenerating) {
+      return;
+    }
+
+    setIsSummaryGenerating(true);
+    try {
+      setSummaryError('');
+      const summary = await generateSummary(activeChannel, windowMinutes);
+      setSummaries((current) => [summary, ...current.filter((item) => item.summary_id !== summary.summary_id)]);
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : 'Failed to generate summary');
+    } finally {
+      setIsSummaryGenerating(false);
+    }
+  }, [activeChannel, isSummaryGenerating]);
+
+  const handleStartTranscription = React.useCallback(async (channel: string, durationMinutes: number) => {
+    if (isTranscriptionStarting) {
+      return;
+    }
+
+    setIsTranscriptionStarting(true);
+    try {
+      setTranscriptionError('');
+      const job = await startTranscription(channel, durationMinutes);
+      setTranscriptionJob(job);
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : 'Failed to start transcription');
+    } finally {
+      setIsTranscriptionStarting(false);
+    }
+  }, [isTranscriptionStarting]);
+
+  React.useEffect(() => {
+    if (!transcriptionJob || transcriptionJob.status !== 'running') {
+      return;
+    }
+
+    const interval = window.setInterval(async () => {
+      try {
+        const job = await loadTranscriptionJob(transcriptionJob.job_id);
+        setTranscriptionJob(job);
+      } catch (err) {
+        setTranscriptionError(err instanceof Error ? err.message : 'Failed to refresh transcription status');
+      }
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [transcriptionJob]);
 
   React.useEffect(() => {
     loadDashboard();
@@ -244,6 +311,22 @@ export function App() {
           windowLabel={volumeWindowLabel}
         />
       ) : null}
+
+      <SummaryPanel
+        activeChannel={activeChannel}
+        summaries={summaries}
+        isLoading={isSummaryGenerating}
+        error={summaryError}
+        onGenerate={handleGenerateSummary}
+      />
+
+      <TranscriptionPanel
+        defaultChannel={activeChannel}
+        job={transcriptionJob}
+        isStarting={isTranscriptionStarting}
+        error={transcriptionError}
+        onStart={handleStartTranscription}
+      />
 
       {showLiveFeed ? <LiveFeed activeChannel={activeChannel} messages={messages} /> : null}
     </main>
