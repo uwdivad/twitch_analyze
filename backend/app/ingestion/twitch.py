@@ -14,6 +14,9 @@ TWITCH_EVENTSUB_WS = "wss://eventsub.wss.twitch.tv/ws"
 TWITCH_HELIX = "https://api.twitch.tv/helix"
 TWITCH_VALIDATE = "https://id.twitch.tv/oauth2/validate"
 
+# A connection that stayed up at least this long counts as "sustained" and resets backoff.
+BACKOFF_RESET_SECONDS = 60.0
+
 
 def parse_twitch_timestamp(value: str | None) -> datetime:
     if not value:
@@ -48,33 +51,64 @@ class TwitchEventSubClient:
         self._http: aiohttp.ClientSession | None = None
         self._channels_by_id: dict[str, ChannelInfo] = {}
         self._stopped = asyncio.Event()
+        self._reconnect_url: str | None = None
+        self._resuming_session = False
 
     async def run_forever(self) -> None:
         backoff_seconds = 2
         async with aiohttp.ClientSession(headers=self._headers()) as http:
             self._http = http
-            self._channels_by_id = await self._resolve_channels()
             while not self._stopped.is_set():
+                loop = asyncio.get_running_loop()
+                attempt_started_at = loop.time()
                 try:
+                    if not self._channels_by_id:
+                        # Resolve inside the retried section so a transient Helix failure
+                        # at boot does not permanently kill EventSub ingestion.
+                        self._channels_by_id = await self._resolve_channels()
                     await self._connect_once()
-                    backoff_seconds = 2
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     logger.exception("Twitch EventSub connection failed: %s", exc)
                     await self._on_status({"state": "error", "detail": str(exc)})
-                    await asyncio.sleep(backoff_seconds)
-                    backoff_seconds = min(backoff_seconds * 2, 60)
+                if self._stopped.is_set():
+                    break
+                if loop.time() - attempt_started_at >= BACKOFF_RESET_SECONDS:
+                    backoff_seconds = 2
+                if self._reconnect_url:
+                    # Twitch requested a session reconnect; dial the new URL immediately.
+                    continue
+                # Back off on clean closes too, not just exceptions, so a
+                # server-initiated close cannot turn into a zero-delay busy loop.
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds = min(backoff_seconds * 2, 60)
 
     async def stop(self) -> None:
         self._stopped.set()
 
     async def _connect_once(self) -> None:
-        await self._on_status({"state": "connecting", "channels": [c.channel_login for c in self._channels_by_id.values()]})
-        async with self._http.ws_connect(TWITCH_EVENTSUB_WS, heartbeat=30) as ws:  # type: ignore[union-attr]
+        # A pending reconnect_url is consumed exactly once; if this attempt fails,
+        # the next one falls back to the default EventSub URL.
+        url = self._reconnect_url or TWITCH_EVENTSUB_WS
+        self._resuming_session = self._reconnect_url is not None
+        self._reconnect_url = None
+        await self._on_status(
+            {
+                "state": "connecting",
+                "channels": [c.channel_login for c in self._channels_by_id.values()],
+                "resuming": self._resuming_session,
+            }
+        )
+        async with self._http.ws_connect(url, heartbeat=30) as ws:  # type: ignore[union-attr]
             async for ws_message in ws:
                 if ws_message.type == aiohttp.WSMsgType.TEXT:
                     await self._handle_ws_payload(ws_message.json())
+                    if self._reconnect_url:
+                        # Twitch asked for a session reconnect: drop this connection so
+                        # run_forever can dial the new URL before messages are re-routed.
+                        await ws.close()
+                        break
                 elif ws_message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                     break
 
@@ -85,11 +119,18 @@ class TwitchEventSubClient:
         if message_type == "session_welcome":
             session_id = payload["payload"]["session"]["id"]
             await self._on_status({"state": "connected", "session_id": session_id})
-            await self._subscribe_channels(session_id)
+            if self._resuming_session:
+                # Connected via reconnect_url: Twitch carries subscriptions over to the
+                # resumed session, so re-subscribing is unnecessary (and would duplicate).
+                self._resuming_session = False
+            else:
+                await self._subscribe_channels(session_id)
             return
 
         if message_type == "session_reconnect":
             reconnect_url = payload["payload"]["session"].get("reconnect_url")
+            if reconnect_url:
+                self._reconnect_url = reconnect_url
             await self._on_status({"state": "reconnect_requested", "reconnect_url": reconnect_url})
             return
 

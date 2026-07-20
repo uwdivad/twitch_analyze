@@ -49,25 +49,10 @@ CREATE TABLE IF NOT EXISTS twitch_analyze.chat_messages
 )
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(event_ts)
-ORDER BY (channel_id, session_id, event_ts, message_id);
-
-CREATE TABLE IF NOT EXISTS twitch_analyze.chat_interval_stats
-(
-    channel_id String,
-    channel_login LowCardinality(String),
-    session_id String,
-    window_start DateTime64(3, 'UTC'),
-    window_size LowCardinality(String),
-    message_count UInt64,
-    unique_chatter_count UInt64,
-    top_chatters String,
-    top_emotes String,
-    top_terms String,
-    updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
-)
-ENGINE = ReplacingMergeTree(updated_at)
-PARTITION BY toYYYYMM(window_start)
-ORDER BY (channel_id, session_id, window_size, window_start);
+ORDER BY (channel_id, session_id, event_ts, message_id)
+-- TTLs only apply to fresh volumes (this script runs on first init);
+-- existing deployments need ALTER TABLE ... MODIFY TTL.
+TTL toDateTime(event_ts) + INTERVAL 180 DAY DELETE;
 
 CREATE TABLE IF NOT EXISTS twitch_analyze.chat_summaries
 (
@@ -102,4 +87,6 @@ CREATE TABLE IF NOT EXISTS twitch_analyze.stream_transcript_segments
 )
 ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(segment_started_at)
-ORDER BY (channel_login, session_id, segment_started_at, segment_id);
+ORDER BY (channel_login, session_id, segment_started_at, segment_id)
+-- TTL applies to fresh volumes only; see note on chat_messages above.
+TTL toDateTime(segment_started_at) + INTERVAL 180 DAY DELETE;

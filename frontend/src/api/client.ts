@@ -13,8 +13,14 @@ import { compactChatMessages } from '../utils/messages';
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
+// Every request aborts after this long so a single hung fetch can never wedge
+// the dashboard reload loop indefinitely.
+const REQUEST_TIMEOUT_MS = 15_000;
+
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`);
+  const response = await fetch(`${API_BASE}${path}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  });
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
@@ -27,7 +33,8 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   });
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;

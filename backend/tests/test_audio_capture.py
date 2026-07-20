@@ -33,7 +33,7 @@ def test_build_ffmpeg_command_extracts_segmented_mono_audio() -> None:
         "1",
         "-strftime",
         "1",
-        "/tmp/audio/%Y%m%dT%H%M%SZ.wav",
+        str(Path("/tmp/audio/%Y%m%dT%H%M%SZ.wav")),
     ]
 
 

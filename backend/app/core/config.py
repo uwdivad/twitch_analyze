@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     app_env: str = "local"
     log_level: str = "INFO"
+    api_auth_token: str = ""
 
     twitch_client_id: str = ""
     twitch_client_secret: str = ""
@@ -37,7 +38,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_summary_model: str = "gpt-5.2"
     openai_summary_max_messages: int = Field(default=250, ge=25, le=1000)
+    openai_timeout_seconds: float = 60.0
     openai_transcription_model: str = "gpt-4o-mini-transcribe"
+    transcription_max_concurrent_jobs: int = 3
     enable_audio_capture: bool = False
     audio_capture_channels: str = ""
     audio_segment_seconds: int = Field(default=30, ge=5, le=300)
@@ -70,7 +73,9 @@ class Settings(BaseSettings):
     @field_validator("clickhouse_password", mode="before")
     @classmethod
     def default_clickhouse_password(cls, value: str | None) -> str:
-        if value is None or value == "":
+        # Only apply the default when the value is truly unset; an explicitly
+        # empty password (e.g. CLICKHOUSE_PASSWORD="") must stay empty.
+        if value is None:
             return "twitch_analyze"
         return value
 

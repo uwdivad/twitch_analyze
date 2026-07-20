@@ -16,11 +16,13 @@ class SummaryService:
         api_key: str,
         model: str,
         max_messages: int,
+        timeout_seconds: float = 60.0,
     ) -> None:
         self._clickhouse = clickhouse
         self._api_key = api_key
         self._model = model
         self._max_messages = max_messages
+        self._timeout_seconds = timeout_seconds
 
     async def generate(self, channel: str, window_minutes: int) -> ChatSummary:
         if not self._api_key:
@@ -52,7 +54,7 @@ class SummaryService:
         return summary
 
     def _call_openai(self, context: SummaryContext) -> str:
-        client = OpenAI(api_key=self._api_key)
+        client = OpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
         response = client.responses.create(
             model=self._model,
             input=[

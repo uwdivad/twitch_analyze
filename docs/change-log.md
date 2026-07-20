@@ -407,3 +407,37 @@ cd frontend && npm run build
 ```
 
 Result: passed. Also manually verified against the live stack (all-channels and single-channel views, bot filter, feed pause/resume pill, collapsible panels, 1440px and 390px viewports) via a local Vite server on port 5174, since the Dockerized frontend's bind mount was in a broken state at the time.
+
+## 2026-07-19 - Full-Codebase Audit Fixes
+
+### Reason
+
+A four-track audit (backend pipeline, API/services, frontend, infra/scripts) surfaced 40+ defects: silent ingestion death paths, unbounded memory growth, a chart-corrupting bucket-key mismatch, unauthenticated resource-spawning endpoints, analytics queries that assumed ReplacingMergeTree dedup at read time, and a `scripts/start.py` that was broken on Windows.
+
+### Change
+
+**Ingestion resilience** (`backend/app/ingestion`, `main.py`, `storage/kafka.py`): EventSub channel resolution moved inside the retry loop (a transient Helix failure no longer permanently kills ingestion); reconnect backoff now also applies to clean server closes (no more zero-delay busy loop on bad OAuth); EventSub `session_reconnect` now follows `reconnect_url` to avoid a message gap; a Kafka publish failure is logged instead of tearing down the IRC connection, and the RealtimeHub broadcast always runs; the chat hot path uses batched `producer.send()` (acks=all kept) instead of per-message `send_and_wait`; lifespan shutdown steps are independently protected so cleanup always completes; IRC fallback message IDs use a deterministic sha1; IRCv3 tag unescaping rewritten as a single left-to-right scan.
+
+**Workers** (`clickhouse_consumer.py`, `transcript_consumer.py`, `audio_capture.py`): consumers stop fetching while a batch is awaiting an insert retry (bounded memory during ClickHouse outages); offset commits are wrapped so a rebalance can't crash the worker, and `consumer.stop()` is guaranteed; audio chunk processing moved inside the per-channel retry loop; streamlink/ffmpeg stderr is continuously drained into a bounded buffer to prevent pipe-buffer deadlock.
+
+**API** (`routes.py`, `summaries.py`, `config.py`, `storage/clickhouse.py`, `realtime.py`): optional `API_AUTH_TOKEN` — when set, mutating endpoints require `X-API-Key`; transcription jobs get a concurrency cap (`TRANSCRIPTION_MAX_CONCURRENT_JOBS`, 429 at cap), bounded job history, and sanitized failure details; `POST /api/messages` capped at 500 messages per request; OpenAI calls get a 60s timeout (`OPENAI_TIMEOUT_SECONDS`); an explicitly empty ClickHouse password is no longer silently replaced with the committed default; analytics queries are duplicate-safe (`uniqExact(message_id)` / `LIMIT 1 BY message_id`) since the pipeline is at-least-once; `ClickHouseRepository.connect()` classmethod constructs off the event loop; SSE subscribers dropped for overflow now receive a close sentinel so clients reconnect instead of idling on a dead stream.
+
+**Frontend** (`analytics.ts`, `App.tsx` in commit 369f6dc, `useLiveMessages.ts`, `client.ts`): volume bucket keys normalized through one helper, fixing the live/DB merge mismatch that split every minute into duplicate chart points; channel-switch race fixed with a request-id staleness guard; live volume recomputed from the deduped message cache instead of per-flush `Math.max` deltas; EventSource reconnects with backoff after fatal closes; all fetches carry a 15s timeout; the pending live-message queue is capped at enqueue time; SSE frames parse inside try/catch.
+
+**Infra/scripts** (`docker-compose*.yml`, `sql/init-clickhouse.sql`, `scripts/start.py`, `backend/Dockerfile`, `k8s/local`): prod overlay now covers `transcript-worker` and `audio-capture` (restart policy, no published ports, no dev bind mounts); all dev published ports bind to 127.0.0.1; Grafana/ClickHouse passwords are env-driven and required in prod (`:?` guards); 180-day TTLs on `chat_messages` and `stream_transcript_segments` (fresh volumes only); Kafka topic defaults pinned (3 partitions, 14-day retention); dead `chat_interval_stats` table and `VITE_BACKEND_WS_PROXY_TARGET` removed everywhere including k8s manifests; `start.py` works on Windows (venv path, npm resolution, process-group cleanup so Vite no longer orphans port 5173); backend container runs as non-root.
+
+### Result
+
+Ingestion survives transient Twitch/Kafka/ClickHouse failures instead of dying silently; memory is bounded under outages and chat spikes; charts merge live and historical data correctly; the API can be token-protected and can no longer be used for unbounded subprocess/OpenAI spend; analytics don't overcount after replays; the local dev scripts work on Windows.
+
+### Verification
+
+```bash
+cd backend && PYTHONPATH=. pytest        # 38 passed, 0 failed
+cd frontend && npm run build             # tsc + vite clean
+docker compose config --quiet            # passed
+docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet  # passed
+python scripts/start.py --help           # parses; Windows paths resolve
+```
+
+Note: backend tests now run only on the asyncio anyio backend (`tests/conftest.py`) — trio (a transitive streamlink dependency) previously duplicated every async test against a backend the app doesn't use.

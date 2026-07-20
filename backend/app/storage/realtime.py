@@ -12,18 +12,18 @@ _SUBSCRIBER_QUEUE_SIZE = 1000
 
 class RealtimeHub:
     def __init__(self, recent_limit: int) -> None:
-        self._subscribers: set[asyncio.Queue[str]] = set()
+        self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._recent: deque[ChatMessage] = deque(maxlen=recent_limit)
         self._lock = asyncio.Lock()
 
-    async def subscribe(self) -> "asyncio.Queue[str]":
-        queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_SIZE)
+    async def subscribe(self) -> "asyncio.Queue[str | None]":
+        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_SIZE)
         async with self._lock:
             self._subscribers.add(queue)
             SSE_CLIENTS.set(len(self._subscribers))
         return queue
 
-    async def unsubscribe(self, queue: "asyncio.Queue[str]") -> None:
+    async def unsubscribe(self, queue: "asyncio.Queue[str | None]") -> None:
         async with self._lock:
             self._subscribers.discard(queue)
             SSE_CLIENTS.set(len(self._subscribers))
@@ -47,7 +47,7 @@ class RealtimeHub:
         async with self._lock:
             subscribers = list(self._subscribers)
 
-        stale: list[asyncio.Queue[str]] = []
+        stale: list[asyncio.Queue[str | None]] = []
         for queue in subscribers:
             try:
                 queue.put_nowait(data)
@@ -58,4 +58,23 @@ class RealtimeHub:
             async with self._lock:
                 for queue in stale:
                     self._subscribers.discard(queue)
+                    self._close_queue(queue)
                 SSE_CLIENTS.set(len(self._subscribers))
+
+    @staticmethod
+    def _close_queue(queue: "asyncio.Queue[str | None]") -> None:
+        """Drain a dropped subscriber's queue and enqueue a close sentinel.
+
+        The SSE generator treats ``None`` as "stream closed" and ends the
+        response so the client's EventSource reconnects instead of hanging
+        on an orphaned queue forever.
+        """
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        try:
+            queue.put_nowait(None)
+        except asyncio.QueueFull:  # pragma: no cover - queue was just drained
+            pass

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import signal
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -107,13 +108,15 @@ class AudioCaptureWorker:
         while not self._stop.is_set():
             try:
                 await self._capture_until_exit(channel_login, channel_dir, processed)
+                # Keep chunk processing/cleanup inside the protected retry loop so a
+                # transient Kafka publish error cannot silently kill this channel's task.
+                await self._process_ready_chunks(channel_login, channel_dir, processed)
+                await self._cleanup_expired_chunks(channel_dir, processed)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Audio capture failed for %s", channel_login)
 
-            await self._process_ready_chunks(channel_login, channel_dir, processed)
-            await self._cleanup_expired_chunks(channel_dir, processed)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=backoff_seconds)
             except TimeoutError:
@@ -139,6 +142,8 @@ class AudioCaptureWorker:
             env=env,
         )
         logger.info("Started audio capture for %s", channel_login)
+        streamlink_stderr_task, streamlink_stderr = self._start_stderr_drain(streamlink)
+        ffmpeg_stderr_task, ffmpeg_stderr = self._start_stderr_drain(ffmpeg)
         pump_task = asyncio.create_task(self._pump_stream(streamlink, ffmpeg))
         streamlink_wait = asyncio.create_task(streamlink.wait())
         ffmpeg_wait = asyncio.create_task(ffmpeg.wait())
@@ -165,9 +170,11 @@ class AudioCaptureWorker:
                     wait_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await wait_task
+            await self._finish_stderr_drain(streamlink_stderr_task)
+            await self._finish_stderr_drain(ffmpeg_stderr_task)
 
-        streamlink_error = await self._read_process_error(streamlink)
-        ffmpeg_error = await self._read_process_error(ffmpeg)
+        streamlink_error = "\n".join(streamlink_stderr).strip()
+        ffmpeg_error = "\n".join(ffmpeg_stderr).strip()
         if streamlink.returncode not in (0, None):
             logger.warning("Streamlink exited for %s with %s: %s", channel_login, streamlink.returncode, streamlink_error)
         if ffmpeg.returncode not in (0, None):
@@ -216,6 +223,8 @@ class AudioCaptureWorker:
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        streamlink_stderr_task, streamlink_stderr = self._start_stderr_drain(streamlink)
+        ffmpeg_stderr_task, ffmpeg_stderr = self._start_stderr_drain(ffmpeg)
         pump_task = asyncio.create_task(self._pump_stream(streamlink, ffmpeg))
         streamlink_wait = asyncio.create_task(streamlink.wait())
         ffmpeg_wait = asyncio.create_task(ffmpeg.wait())
@@ -246,9 +255,11 @@ class AudioCaptureWorker:
                     wait_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await wait_task
+            await self._finish_stderr_drain(streamlink_stderr_task)
+            await self._finish_stderr_drain(ffmpeg_stderr_task)
 
-        streamlink_error = await self._read_process_error(streamlink)
-        ffmpeg_error = await self._read_process_error(ffmpeg)
+        streamlink_error = "\n".join(streamlink_stderr).strip()
+        ffmpeg_error = "\n".join(ffmpeg_stderr).strip()
         if streamlink.returncode not in (0, None):
             logger.warning("Streamlink exited for %s with %s: %s", channel_login, streamlink.returncode, streamlink_error)
         if ffmpeg.returncode not in (0, None):
@@ -410,14 +421,58 @@ class AudioCaptureWorker:
             process.kill()
             await process.wait()
 
-    async def _read_process_error(self, process: asyncio.subprocess.Process) -> str:
-        if process.stderr is None:
-            return ""
+    def _start_stderr_drain(
+        self,
+        process: asyncio.subprocess.Process,
+        max_lines: int = 50,
+    ) -> tuple[asyncio.Task | None, deque[str]]:
+        """Continuously drain a subprocess stderr pipe into a bounded line buffer.
+
+        Verbose tools (streamlink/ffmpeg) can fill the ~64KB OS pipe buffer and deadlock
+        the capture if stderr is never read while the process runs. The returned deque
+        keeps only the last `max_lines` lines for error reporting.
+        """
+        lines: deque[str] = deque(maxlen=max_lines)
+        stderr = process.stderr
+        if stderr is None:
+            return None, lines
+
+        async def _drain() -> None:
+            buffer = b""
+            try:
+                while True:
+                    chunk = await stderr.read(4096)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    *complete, buffer = buffer.split(b"\n")
+                    for raw_line in complete:
+                        lines.append(raw_line.decode("utf-8", errors="replace").rstrip("\r"))
+                    if len(buffer) > 65536:
+                        lines.append(buffer.decode("utf-8", errors="replace"))
+                        buffer = b""
+                if buffer:
+                    lines.append(buffer.decode("utf-8", errors="replace").rstrip("\r"))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("stderr drain failed", exc_info=True)
+
+        return asyncio.create_task(_drain()), lines
+
+    async def _finish_stderr_drain(self, task: asyncio.Task | None) -> None:
+        if task is None:
+            return
+        # The process has been terminated, so the pipe hits EOF almost immediately;
+        # the timeout is just a safety net.
         try:
-            data = await asyncio.wait_for(process.stderr.read(), timeout=1)
+            await asyncio.wait_for(task, timeout=2)
         except TimeoutError:
-            return ""
-        return data.decode("utf-8", errors="replace").strip()
+            pass
+        if not task.done():
+            task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def main() -> None:

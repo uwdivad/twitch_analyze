@@ -82,6 +82,37 @@ async def test_summary_generation_stores_openai_result(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
+async def test_summary_generation_passes_timeout_to_openai_client(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    captured: dict = {}
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return SimpleNamespace(output_text="### Short recap\nAll good.")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("app.services.summaries.OpenAI", FakeOpenAI)
+    clickhouse = CapturingClickHouse()
+    service = SummaryService(
+        clickhouse=clickhouse,
+        api_key="test-key",
+        model="test-model",
+        max_messages=25,
+        timeout_seconds=12.5,
+    )
+
+    summary = await service.generate(channel="example", window_minutes=60)
+
+    assert captured["timeout"] == 12.5
+    assert summary.summary_text == "### Short recap\nAll good."
+
+
+@pytest.mark.anyio
 async def test_summary_generation_rejects_empty_window() -> None:
     service = SummaryService(clickhouse=EmptyClickHouse(), api_key="test-key", model="test-model", max_messages=25)
 

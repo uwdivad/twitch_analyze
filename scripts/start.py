@@ -15,7 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 FRONTEND = ROOT / "frontend"
-VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
+if os.name == "nt":
+    VENV_PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
+else:
+    VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
 INFRA_SERVICES = ["kafka", "clickhouse", "kafka-console"]
 
 
@@ -57,8 +60,11 @@ def ensure_env_file() -> None:
         raise SystemExit(1)
 
 
-def ensure_frontend_dependencies() -> None:
-    if shutil.which("npm") is None:
+def npm_executable() -> str:
+    # On Windows npm is npm.cmd, which Popen cannot find by bare name;
+    # resolve the full path via PATH lookup on every platform.
+    npm = shutil.which("npm")
+    if npm is None:
         print(
             "npm was not found on PATH. Install Node.js 22+ or start the frontend through Docker Compose:\n"
             "  docker compose up --build frontend\n"
@@ -67,10 +73,15 @@ def ensure_frontend_dependencies() -> None:
             file=sys.stderr,
         )
         raise SystemExit(1)
+    return npm
+
+
+def ensure_frontend_dependencies() -> None:
+    npm = npm_executable()
     if (FRONTEND / "node_modules").exists():
         return
     print("frontend/node_modules is missing; running npm install...")
-    subprocess.run(["npm", "install"], cwd=FRONTEND, check=True)
+    subprocess.run([npm, "install"], cwd=FRONTEND, check=True)
 
 
 def require_docker() -> None:
@@ -165,16 +176,9 @@ def command_for(service: str, install_frontend: bool) -> tuple[list[str], Path, 
     if service == "frontend":
         if install_frontend:
             ensure_frontend_dependencies()
-        elif shutil.which("npm") is None:
-            print(
-                "npm was not found on PATH. Install Node.js 22+ or run the frontend with Docker Compose:\n"
-                "  docker compose up --build frontend",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
+        npm = npm_executable()
         env.setdefault("VITE_BACKEND_PROXY_TARGET", "http://localhost:8000")
-        env.setdefault("VITE_BACKEND_WS_PROXY_TARGET", "ws://localhost:8000")
-        return (["npm", "run", "dev", "--", "--host", "0.0.0.0"], FRONTEND, env)
+        return ([npm, "run", "dev", "--", "--host", "0.0.0.0"], FRONTEND, env)
 
     raise ValueError(f"Unknown service: {service}")
 
@@ -183,6 +187,49 @@ def run_one(service: str, install_frontend: bool) -> int:
     command, cwd, env = command_for(service, install_frontend)
     print(f"Starting {service}: {' '.join(command)}")
     return subprocess.call(command, cwd=cwd, env=env)
+
+
+def spawn_in_new_group(command: list[str], cwd: Path, env: dict[str, str]) -> subprocess.Popen:
+    # Each child gets its own process group/session so we can terminate the
+    # whole tree (e.g. npm -> node/Vite) on shutdown, not just the direct child.
+    if os.name == "nt":
+        return subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    return subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True)
+
+
+def terminate_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        # taskkill /T kills the full tree; plain terminate() would orphan
+        # grandchildren (e.g. the node process behind npm.cmd holding 5173).
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+            capture_output=True,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
+def kill_process_tree(process: subprocess.Popen) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+            capture_output=True,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def run_all(install_frontend: bool) -> int:
@@ -194,7 +241,7 @@ def run_all(install_frontend: bool) -> int:
         for service in services:
             command, cwd, env = command_for(service, install_frontend)
             print(f"Starting {service}: {' '.join(command)}")
-            processes.append(subprocess.Popen(command, cwd=cwd, env=env))
+            processes.append(spawn_in_new_group(command, cwd, env))
             time.sleep(1)
 
         while True:
@@ -206,13 +253,12 @@ def run_all(install_frontend: bool) -> int:
         return 130
     finally:
         for process in processes:
-            if process.poll() is None:
-                process.send_signal(signal.SIGTERM)
+            terminate_process_tree(process)
         for process in processes:
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                process.kill()
+                kill_process_tree(process)
 
 
 def parse_args() -> argparse.Namespace:

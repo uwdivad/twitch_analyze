@@ -41,13 +41,17 @@ class KafkaJsonProducer:
             await self._producer.stop()
             self._producer = None
 
+    @staticmethod
+    def _message_key(message: BaseModel) -> str:
+        channel = getattr(message, "channel_id", "") or getattr(message, "channel_login", "")
+        session_id = getattr(message, "session_id", "")
+        return f"{channel}:{session_id}"
+
     async def publish(self, message: BaseModel) -> None:
         if self._producer is None:
             raise RuntimeError("Kafka producer is not started")
 
-        channel = getattr(message, "channel_id", "") or getattr(message, "channel_login", "")
-        session_id = getattr(message, "session_id", "")
-        key = f"{channel}:{session_id}"
+        key = self._message_key(message)
         with KAFKA_PUBLISH_LATENCY.labels(topic=self._topic).time():
             try:
                 await self._producer.send_and_wait(
@@ -60,7 +64,40 @@ class KafkaJsonProducer:
                 KAFKA_PUBLISH_ERRORS.labels(topic=self._topic).inc()
                 raise
 
+    def _on_delivery(self, future) -> None:  # noqa: ANN001 - asyncio.Future from aiokafka
+        if future.cancelled():
+            KAFKA_PUBLISH_ERRORS.labels(topic=self._topic).inc()
+            logger.error("Kafka delivery cancelled for topic %s", self._topic)
+            return
+        exc = future.exception()
+        if exc is not None:
+            KAFKA_PUBLISH_ERRORS.labels(topic=self._topic).inc()
+            logger.error("Kafka delivery failed for topic %s: %s", self._topic, exc)
+        else:
+            KAFKA_MESSAGES_PUBLISHED.labels(topic=self._topic).inc()
+
 
 class KafkaChatProducer(KafkaJsonProducer):
     async def publish(self, message: ChatMessage) -> None:
-        await super().publish(message)
+        """Enqueue a chat message without awaiting broker acks (hot path).
+
+        aiokafka batches queued messages internally and still requests acks="all";
+        delivery failures are logged via the future callback instead of blocking
+        per-message. Flush-on-shutdown is preserved because AIOKafkaProducer.stop()
+        drains the queue before returning.
+        """
+        if self._producer is None:
+            raise RuntimeError("Kafka producer is not started")
+
+        key = self._message_key(message)
+        with KAFKA_PUBLISH_LATENCY.labels(topic=self._topic).time():
+            try:
+                delivery_future = await self._producer.send(
+                    self._topic,
+                    key=key,
+                    value=message.model_dump(mode="json"),
+                )
+            except Exception:
+                KAFKA_PUBLISH_ERRORS.labels(topic=self._topic).inc()
+                raise
+        delivery_future.add_done_callback(self._on_delivery)

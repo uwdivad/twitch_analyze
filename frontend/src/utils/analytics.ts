@@ -1,38 +1,44 @@
 import type { ChatMessage, TopItem, VolumePoint } from '../types';
 import { DEFAULT_VOLUME_WINDOW_MINUTES, RECENT_MESSAGE_LIMIT } from '../config';
 
+// Canonical minute-bucket key. The backend serializes VolumePoint.bucket without
+// milliseconds ("...T12:34:00Z") while Date.toISOString() emits them
+// ("...T12:34:00.000Z"), and all merging below is exact-string comparison — so
+// EVERY bucket string, whether generated locally from a message timestamp or
+// received from the server, must pass through this helper before it is compared
+// or used as a map key.
 export function minuteBucket(value: string): string {
   const date = new Date(value);
-  date.setSeconds(0, 0);
+  date.setUTCSeconds(0, 0);
   return date.toISOString();
 }
 
-export function incrementVolume(
-  current: VolumePoint[],
-  message: ChatMessage,
-  minuteChatters: Map<string, Set<string>>,
+// Batch accumulation: one Map pass over the messages, O(messages + buckets),
+// instead of a per-message find + full-array copy.
+export function buildVolumeFromMessages(
+  messages: ChatMessage[],
   limit = DEFAULT_VOLUME_WINDOW_MINUTES
 ): VolumePoint[] {
-  const bucket = minuteBucket(message.event_ts);
-  const chatter = message.chatter_login || message.chatter_display_name || message.message_id;
-  const chatters = minuteChatters.get(bucket) ?? new Set<string>();
-  const wasNewChatter = !chatters.has(chatter);
-  chatters.add(chatter);
-  minuteChatters.set(bucket, chatters);
-
-  const existing = current.find((point) => point.bucket === bucket);
-  if (existing) {
-    return current.map((point) =>
-      point.bucket === bucket
-        ? {
-            ...point,
-            message_count: point.message_count + 1,
-            unique_chatter_count: point.unique_chatter_count + (wasNewChatter ? 1 : 0)
-          }
-        : point
-    );
+  const byBucket = new Map<string, { messageCount: number; chatters: Set<string> }>();
+  for (const message of messages) {
+    const bucket = minuteBucket(message.event_ts);
+    let entry = byBucket.get(bucket);
+    if (!entry) {
+      entry = { messageCount: 0, chatters: new Set<string>() };
+      byBucket.set(bucket, entry);
+    }
+    entry.messageCount += 1;
+    entry.chatters.add(message.chatter_login || message.chatter_display_name || message.message_id);
   }
-  return [...current, { bucket, message_count: 1, unique_chatter_count: 1 }].slice(-limit);
+
+  return [...byBucket.entries()]
+    .map(([bucket, entry]) => ({
+      bucket,
+      message_count: entry.messageCount,
+      unique_chatter_count: entry.chatters.size
+    }))
+    .sort((a, b) => new Date(a.bucket).getTime() - new Date(b.bucket).getTime())
+    .slice(-limit);
 }
 
 export function incrementTopItems(current: TopItem[], value: string): TopItem[] {
@@ -65,17 +71,6 @@ export function incrementTopItemsByCounts(current: TopItem[], counts: Map<string
     .map(([value, count]) => ({ value, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
-}
-
-export function buildVolumeFromMessages(
-  messages: ChatMessage[],
-  limit = DEFAULT_VOLUME_WINDOW_MINUTES
-): VolumePoint[] {
-  const minuteChatters = new Map<string, Set<string>>();
-  return messages.reduce<VolumePoint[]>(
-    (current, message) => incrementVolume(current, message, minuteChatters, limit),
-    []
-  );
 }
 
 export function buildTopChattersFromMessages(messages: ChatMessage[]): TopItem[] {
@@ -113,16 +108,24 @@ export function mergeVolumeSeries(series: VolumePoint[][], limit = DEFAULT_VOLUM
 
   for (const points of series) {
     for (const point of points) {
-      const existing = byBucket.get(point.bucket);
+      // Normalize server-provided bucket strings so DB and locally-built points
+      // for the same minute land on the same key.
+      const bucket = minuteBucket(point.bucket);
+      const existing = byBucket.get(bucket);
+      // Overlapping buckets take the per-bucket max. This is a deliberate
+      // approximation for boundary minutes where the DB series and the live
+      // in-memory series each saw part (or all) of the same minute: summing
+      // would double-count messages present in both series, so we accept
+      // undercounting the boundary minute instead.
       byBucket.set(
-        point.bucket,
+        bucket,
         existing
           ? {
-              bucket: point.bucket,
+              bucket,
               message_count: Math.max(existing.message_count, point.message_count),
               unique_chatter_count: Math.max(existing.unique_chatter_count, point.unique_chatter_count)
             }
-          : point
+          : { ...point, bucket }
       );
     }
   }

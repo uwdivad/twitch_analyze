@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import random
 import re
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 TWITCH_IRC_WS = "wss://irc-ws.chat.twitch.tv:443"
 IRC_PRIVMSG_RE = re.compile(r"^(?::(?P<prefix>\S+) )?PRIVMSG #(?P<channel>\S+) :(?P<message>.*)$")
+
+# A connection that stayed up at least this long counts as "sustained" and resets backoff.
+BACKOFF_RESET_SECONDS = 60.0
 
 
 def parse_irc_tags(raw_tags: str) -> dict[str, str]:
@@ -102,16 +106,23 @@ class TwitchIrcClient:
     async def run_forever(self) -> None:
         backoff_seconds = 2
         while not self._stopped.is_set():
+            loop = asyncio.get_running_loop()
+            attempt_started_at = loop.time()
             try:
                 await self._connect_once()
-                backoff_seconds = 2
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.exception("Twitch IRC connection failed: %s", exc)
                 await self._on_status({"state": "irc_error", "detail": str(exc)})
-                await asyncio.sleep(backoff_seconds)
-                backoff_seconds = min(backoff_seconds * 2, 60)
+            if self._stopped.is_set():
+                break
+            if loop.time() - attempt_started_at >= BACKOFF_RESET_SECONDS:
+                backoff_seconds = 2
+            # Back off on clean closes too (e.g. server rejecting bad OAuth), not just
+            # exceptions, so a server-initiated close cannot become a zero-delay busy loop.
+            await asyncio.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, 60)
 
     async def stop(self) -> None:
         self._stopped.set()
@@ -186,7 +197,11 @@ class TwitchIrcClient:
         emotes = parse_emotes(tags.get("emotes", ""), message_text)
 
         return ChatMessage(
-            message_id=tags.get("id") or f"irc:{channel_login}:{int(event_ts.timestamp() * 1000)}:{hash(line)}",
+            message_id=tags.get("id")
+            or (
+                f"irc:{channel_login}:{int(event_ts.timestamp() * 1000)}:"
+                f"{hashlib.sha1(line.encode('utf-8')).hexdigest()}"
+            ),
             eventsub_message_id="",
             channel_id=channel_id,
             channel_login=channel_login,
@@ -214,11 +229,25 @@ def _login_from_prefix(prefix: str | None) -> str:
     return login.lower()
 
 
+_TAG_ESCAPES = {"s": " ", ":": ";", "\\": "\\", "r": "\r", "n": "\n"}
+
+
 def _unescape_tag(value: str) -> str:
-    return (
-        value.replace(r"\s", " ")
-        .replace(r"\:", ";")
-        .replace(r"\\", "\\")
-        .replace(r"\r", "\r")
-        .replace(r"\n", "\n")
-    )
+    # Single left-to-right scan per the IRCv3 message-tags spec: each backslash consumes
+    # exactly the next character (unknown escapes yield that character verbatim; a lone
+    # trailing backslash is dropped). Chained str.replace mishandles e.g. r"\\s".
+    result: list[str] = []
+    i = 0
+    length = len(value)
+    while i < length:
+        char = value[i]
+        if char == "\\":
+            if i + 1 >= length:
+                break
+            next_char = value[i + 1]
+            result.append(_TAG_ESCAPES.get(next_char, next_char))
+            i += 2
+        else:
+            result.append(char)
+            i += 1
+    return "".join(result)

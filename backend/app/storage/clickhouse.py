@@ -43,6 +43,31 @@ class ClickHouseRepository:
             database=database,
         )
 
+    @classmethod
+    async def connect(
+        cls,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        database: str,
+    ) -> "ClickHouseRepository":
+        """Async factory: runs the blocking connect/retry loop in a worker thread.
+
+        Use this from async contexts (FastAPI lifespan, workers) instead of
+        calling ``ClickHouseRepository(...)`` directly, so the retry loop's
+        ``time.sleep`` never blocks the event loop. ``__init__`` remains
+        available for sync/test callers.
+        """
+        return await asyncio.to_thread(
+            cls,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            database=database,
+        )
+
     async def insert_messages(self, messages: list[ChatMessage]) -> None:
         if not messages:
             return
@@ -113,7 +138,8 @@ class ClickHouseRepository:
                 received_at
             FROM chat_messages
             {where}
-            ORDER BY event_ts DESC
+            ORDER BY event_ts DESC, message_id
+            LIMIT 1 BY message_id
             LIMIT %(limit)s
         """
         params["limit"] = limit
@@ -131,7 +157,7 @@ class ClickHouseRepository:
         query = f"""
             SELECT
                 toStartOfMinute(event_ts) AS bucket,
-                count() AS message_count,
+                uniqExact(message_id) AS message_count,
                 uniqExact(chatter_user_id) AS unique_chatter_count
             FROM chat_messages
             {where}
@@ -152,7 +178,7 @@ class ClickHouseRepository:
             SELECT
                 channel_login,
                 toStartOfMinute(event_ts) AS bucket,
-                count() AS message_count,
+                uniqExact(message_id) AS message_count,
                 uniqExact(chatter_user_id) AS unique_chatter_count
             FROM chat_messages
             GROUP BY channel_login, bucket
@@ -177,7 +203,7 @@ class ClickHouseRepository:
     ) -> int:
         where, params = self._message_filters(channel=channel, session_id=session_id)
         query = f"""
-            SELECT count() AS message_count
+            SELECT uniqExact(message_id) AS message_count
             FROM chat_messages
             {where}
         """
@@ -194,7 +220,7 @@ class ClickHouseRepository:
     ) -> list[TopItem]:
         where, params = self._message_filters(channel=channel, session_id=session_id)
         query = f"""
-            SELECT chatter_login, count() AS message_count
+            SELECT chatter_login, uniqExact(message_id) AS message_count
             FROM chat_messages
             {where}
             GROUP BY chatter_login
@@ -214,8 +240,12 @@ class ClickHouseRepository:
         where, params = self._message_filters(channel=channel, session_id=session_id)
         query = f"""
             SELECT JSONExtractString(arrayJoin(JSONExtractArrayRaw(emotes)), 'text') AS emote, count() AS emote_count
-            FROM chat_messages
-            {where}
+            FROM (
+                SELECT message_id, emotes
+                FROM chat_messages
+                {where}
+                LIMIT 1 BY message_id
+            )
             GROUP BY emote
             HAVING emote != ''
             ORDER BY emote_count DESC
@@ -244,7 +274,7 @@ class ClickHouseRepository:
                 any(channel_login),
                 any(channel_display_name),
                 any(session_id),
-                count(),
+                uniqExact(message_id),
                 uniqExact(chatter_user_id)
             FROM chat_messages
             {where}
@@ -254,7 +284,7 @@ class ClickHouseRepository:
             return None
 
         top_chatters_query = f"""
-            SELECT chatter_login, count() AS message_count
+            SELECT chatter_login, uniqExact(message_id) AS message_count
             FROM chat_messages
             {where}
             GROUP BY chatter_login
@@ -263,8 +293,12 @@ class ClickHouseRepository:
         """
         top_emotes_query = f"""
             SELECT JSONExtractString(arrayJoin(JSONExtractArrayRaw(emotes)), 'text') AS emote, count() AS emote_count
-            FROM chat_messages
-            {where}
+            FROM (
+                SELECT message_id, emotes
+                FROM chat_messages
+                {where}
+                LIMIT 1 BY message_id
+            )
             GROUP BY emote
             HAVING emote != ''
             ORDER BY emote_count DESC
@@ -273,7 +307,7 @@ class ClickHouseRepository:
         spike_windows_query = f"""
             SELECT
                 toStartOfMinute(event_ts) AS bucket,
-                count() AS message_count,
+                uniqExact(message_id) AS message_count,
                 uniqExact(chatter_user_id) AS unique_chatter_count
             FROM chat_messages
             {where}
@@ -306,7 +340,8 @@ class ClickHouseRepository:
             FROM chat_messages
             {where}
             AND length(message_text) > 0
-            ORDER BY event_ts DESC
+            ORDER BY event_ts DESC, message_id
+            LIMIT 1 BY message_id
             LIMIT %(max_messages)s
         """
         sample_params = dict(params)

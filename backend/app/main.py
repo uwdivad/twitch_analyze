@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
         for login in settings.channel_logins
     }
     app.state.realtime_hub = RealtimeHub(recent_limit=settings.recent_message_limit)
-    app.state.clickhouse = ClickHouseRepository(
+    app.state.clickhouse = await ClickHouseRepository.connect(
         host=settings.clickhouse_host,
         port=settings.clickhouse_port,
         username=settings.clickhouse_username,
@@ -46,7 +46,12 @@ async def lifespan(app: FastAPI):
     async def handle_message(message: ChatMessage) -> None:
         source = str(message.raw_event.get("source", "eventsub"))
         CHAT_MESSAGES_INGESTED.labels(source=source, channel=message.channel_login).inc()
-        await app.state.kafka.publish(message)
+        try:
+            await app.state.kafka.publish(message)
+        except Exception:
+            # A Kafka publish failure must not tear down the ingestion connection,
+            # and the live feed should still receive the message.
+            logger.exception("Failed to publish chat message %s to Kafka", message.message_id)
         await app.state.realtime_hub.publish_message(message)
 
     async def handle_status(status: dict) -> None:
@@ -93,20 +98,37 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Each shutdown step is independently protected so one failure (e.g. an
+        # ingestion task that stored a non-cancellation exception) cannot skip the
+        # remaining cleanup.
         task = app.state.ingestion_task
         if task:
             INGESTION_CONNECTED.labels(mode=settings.twitch_ingestion_mode).set(0)
-            await app.state.twitch_client.stop()
+            try:
+                await app.state.twitch_client.stop()
+            except Exception:
+                logger.exception("Failed to stop Twitch client during shutdown")
             task.cancel()
-            with suppress(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Ingestion task raised during shutdown")
         transcription_tasks = list(app.state.transcription_tasks.values())
         for transcription_task in transcription_tasks:
             transcription_task.cancel()
         for transcription_task in transcription_tasks:
-            with suppress(asyncio.CancelledError):
+            try:
                 await transcription_task
-        await app.state.kafka.stop()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Transcription task raised during shutdown")
+        try:
+            await app.state.kafka.stop()
+        except Exception:
+            logger.exception("Failed to stop Kafka producer during shutdown")
 
 
 def create_app() -> FastAPI:
@@ -115,7 +137,9 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
-        allow_credentials=True,
+        # No cookie/session auth exists; disabling credentials avoids the
+        # credentialed-wildcard-origin footgun if CORS_ORIGINS is ever set to "*".
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

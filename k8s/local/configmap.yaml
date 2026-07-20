@@ -19,4 +19,3 @@ data:
   ENABLE_TWITCH_INGESTION: "true"
   CORS_ORIGINS: http://localhost:5173,http://localhost:30080
   VITE_BACKEND_PROXY_TARGET: http://backend:8000
-  VITE_BACKEND_WS_PROXY_TARGET: ws://backend:8000

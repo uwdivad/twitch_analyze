@@ -2,7 +2,7 @@ services:
   kafka:
     image: confluentinc/cp-kafka:7.6.1
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_NODE_ID: 1
@@ -17,6 +17,9 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Pin defaults for auto-created topics: 3 partitions, 14-day retention.
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 336
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -29,8 +32,8 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
     environment:
       CLICKHOUSE_DB: twitch_analyze
       CLICKHOUSE_USER: default
@@ -61,7 +64,7 @@ services:
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-twitch_analyze}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./backend/app:/app/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -82,7 +85,7 @@ services:
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-twitch_analyze}
     ports:
-      - "9101:9101"
+      - "127.0.0.1:9101:9101"
     volumes:
       - ./backend/app:/app/app
     command: python -m app.workers.clickhouse_consumer
@@ -103,7 +106,7 @@ services:
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-twitch_analyze}
     ports:
-      - "9102:9102"
+      - "127.0.0.1:9102:9102"
     volumes:
       - ./backend/app:/app/app
     command: python -m app.workers.transcript_consumer
@@ -132,7 +135,7 @@ services:
     command:
       - "--kafka.server=kafka:29092"
     ports:
-      - "9308:9308"
+      - "127.0.0.1:9308:9308"
 
   kafka-console:
     image: redpandadata/console:v2.8.5
@@ -143,7 +146,7 @@ services:
     environment:
       KAFKA_BROKERS: kafka:29092
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
   prometheus:
     image: prom/prometheus:v2.55.1
@@ -152,7 +155,7 @@ services:
       - worker
       - kafka-exporter
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command:
@@ -164,10 +167,10 @@ services:
     depends_on:
       - prometheus
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -180,10 +183,9 @@ services:
     depends_on:
       - backend
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     environment:
       VITE_BACKEND_PROXY_TARGET: http://backend:8000
-      VITE_BACKEND_WS_PROXY_TARGET: ws://backend:8000
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/index.html:/app/index.html

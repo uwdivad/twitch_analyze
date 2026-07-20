@@ -14,6 +14,9 @@ type UseLiveMessagesArgs = {
   onMessage: (message: ChatMessage) => void;
 };
 
+const INITIAL_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
 export function useLiveMessages({ activeChannel, enabled, onMessage }: UseLiveMessagesArgs): SocketState {
   const [socketState, setSocketState] = React.useState<SocketState>('connecting');
 
@@ -23,27 +26,72 @@ export function useLiveMessages({ activeChannel, enabled, onMessage }: UseLiveMe
       return;
     }
 
-    setSocketState('connecting');
-    const source = new EventSource(streamUrl());
+    let disposed = false;
+    let source: EventSource | null = null;
+    let reconnectTimer: number | null = null;
+    let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
 
-    source.onopen = () => setSocketState('live');
-    source.onerror = () => {
-      // EventSource auto-reconnects on transient errors; onopen fires again once it succeeds.
-      setSocketState(source.readyState === EventSource.CLOSED ? 'offline' : 'connecting');
-    };
-    source.onmessage = (event) => {
-      const envelope = JSON.parse(event.data) as LiveEnvelope;
-      if (!isChatMessageEnvelope(envelope)) {
+    const connect = () => {
+      if (disposed) {
         return;
       }
+      setSocketState('connecting');
+      source = new EventSource(streamUrl());
 
-      const message = compactChatMessage(envelope.payload);
-      if (!activeChannel || message.channel_login === activeChannel) {
-        onMessage(message);
-      }
+      source.onopen = () => {
+        reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
+        setSocketState('live');
+      };
+      source.onerror = () => {
+        if (!source) {
+          return;
+        }
+        if (source.readyState === EventSource.CLOSED) {
+          // Fatal close (e.g. an HTTP-level failure): EventSource will never
+          // retry on its own, so schedule a manual reconnect with backoff.
+          source.close();
+          source = null;
+          setSocketState('offline');
+          if (!disposed && reconnectTimer === null) {
+            reconnectTimer = window.setTimeout(() => {
+              reconnectTimer = null;
+              connect();
+            }, reconnectDelayMs);
+            reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS);
+          }
+        } else {
+          // EventSource auto-reconnects on transient errors; onopen fires again once it succeeds.
+          setSocketState('connecting');
+        }
+      };
+      source.onmessage = (event) => {
+        let envelope: LiveEnvelope;
+        try {
+          envelope = JSON.parse(event.data) as LiveEnvelope;
+        } catch (err) {
+          console.warn('Dropping malformed SSE frame', err);
+          return;
+        }
+        if (!isChatMessageEnvelope(envelope)) {
+          return;
+        }
+
+        const message = compactChatMessage(envelope.payload);
+        if (!activeChannel || message.channel_login === activeChannel) {
+          onMessage(message);
+        }
+      };
     };
 
-    return () => source.close();
+    connect();
+
+    return () => {
+      disposed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      source?.close();
+    };
   }, [activeChannel, enabled, onMessage]);
 
   return socketState;
