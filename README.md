@@ -1,7 +1,7 @@
 # Twitch Analyze 🎮
 
 Twitch Analyze is a realtime Twitch chat analytics app. It ingests live chat, stores events for historical queries, and displays channel activity in a React dashboard.
-
+![dashboard](assets/home.png)
 ## What It Does ✨
 
 - 📡 Reads Twitch chat through IRC or EventSub.
