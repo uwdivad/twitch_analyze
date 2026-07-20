@@ -1,4 +1,6 @@
 import React from 'react';
+import { ChevronDown } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 import type { ChatSummary } from '../types';
 
@@ -41,68 +43,106 @@ function formatSpikeTime(value: string): string {
 
 export function SummaryPanel({ activeChannel, summaries, isLoading, error, onGenerate }: SummaryPanelProps) {
   const [windowMinutes, setWindowMinutes] = React.useState(60);
+  const [collapsed, setCollapsed] = React.useState(true);
+
+  React.useEffect(() => {
+    if (isLoading || summaries.length > 0 || error) {
+      setCollapsed(false);
+    }
+  }, [isLoading, summaries.length, error]);
+
+  const headingHint = activeChannel
+    ? `#${activeChannel}${summaries.length > 0 ? ` · ${summaries.length} summar${summaries.length === 1 ? 'y' : 'ies'}` : ''}`
+    : 'Select a channel to generate summaries';
 
   return (
     <section className="panel summary-panel">
       <div className="panel-heading summary-heading">
         <div>
           <h2>Chat Summary</h2>
-          <span>{activeChannel ? `#${activeChannel}` : 'Select a channel to generate summaries'}</span>
+          <span>{headingHint}</span>
         </div>
         <div className="summary-actions">
-          <select
-            aria-label="Summary window"
-            value={windowMinutes}
-            onChange={(event) => setWindowMinutes(Number(event.target.value))}
+          {activeChannel ? (
+            <>
+              <select
+                aria-label="Summary window"
+                value={windowMinutes}
+                onChange={(event) => setWindowMinutes(Number(event.target.value))}
+              >
+                {SUMMARY_WINDOWS.map((option) => (
+                  <option key={option.minutes} value={option.minutes}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <button type="button" disabled={isLoading} onClick={() => onGenerate(windowMinutes)}>
+                {isLoading ? 'Generating' : 'Generate'}
+              </button>
+            </>
+          ) : null}
+          <button
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? 'Expand chat summaries' : 'Collapse chat summaries'}
+            className={`button-ghost collapse-toggle${collapsed ? ' is-collapsed' : ''}`}
+            onClick={() => setCollapsed((current) => !current)}
+            type="button"
           >
-            {SUMMARY_WINDOWS.map((option) => (
-              <option key={option.minutes} value={option.minutes}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <button type="button" disabled={!activeChannel || isLoading} onClick={() => onGenerate(windowMinutes)}>
-            {isLoading ? 'Generating' : 'Generate'}
+            <ChevronDown size={16} />
           </button>
         </div>
       </div>
 
-      {error ? <div className="summary-error">{error}</div> : null}
+      {collapsed ? null : (
+        <>
+          {error ? <div className="summary-error">{error}</div> : null}
 
-      <div className="summary-list">
-        {summaries.length === 0 ? (
-          <div className="empty">
-            {activeChannel ? 'No summaries yet.' : 'Choose one channel from the controls above.'}
-          </div>
-        ) : (
-          summaries.map((summary) => (
-            <article key={summary.summary_id} className="summary-card">
-              <header>
-                <strong>{formatSummaryWindow(summary)}</strong>
-                <span>
-                  {summary.source_stats.message_count.toLocaleString()} messages by{' '}
-                  {summary.source_stats.unique_chatter_count.toLocaleString()} chatters
-                </span>
-              </header>
-              <div className="summary-meta">
-                <span>{summary.window_size}</span>
-                <span>{summary.model}</span>
+          <div className="summary-list">
+            {isLoading ? (
+              <article className="summary-card summary-skeleton" aria-hidden="true">
+                <div className="skeleton-line" style={{ width: '40%' }} />
+                <div className="skeleton-line" style={{ width: '95%' }} />
+                <div className="skeleton-line" style={{ width: '88%' }} />
+                <div className="skeleton-line" style={{ width: '62%' }} />
+              </article>
+            ) : null}
+            {summaries.length === 0 && !isLoading ? (
+              <div className="empty">
+                {activeChannel ? 'No summaries yet.' : 'Choose one channel from the controls above.'}
               </div>
-              {summary.source_stats.spike_windows.length > 0 ? (
-                <div className="summary-spikes">
-                  <strong>Spike windows</strong>
-                  <span>
-                    {summary.source_stats.spike_windows
-                      .map((window) => `${formatSpikeTime(window.bucket)} (${window.message_count})`)
-                      .join(', ')}
-                  </span>
-                </div>
-              ) : null}
-              <pre>{summary.summary_text}</pre>
-            </article>
-          ))
-        )}
-      </div>
+            ) : (
+              summaries.map((summary) => (
+                <article key={summary.summary_id} className="summary-card">
+                  <header>
+                    <strong>{formatSummaryWindow(summary)}</strong>
+                    <span>
+                      {summary.source_stats.message_count.toLocaleString()} messages by{' '}
+                      {summary.source_stats.unique_chatter_count.toLocaleString()} chatters
+                    </span>
+                  </header>
+                  <div className="summary-meta">
+                    <span>{summary.window_size}</span>
+                    <span>{summary.model}</span>
+                  </div>
+                  {summary.source_stats.spike_windows.length > 0 ? (
+                    <div className="summary-spikes">
+                      <strong>Spike windows</strong>
+                      <span>
+                        {summary.source_stats.spike_windows
+                          .map((window) => `${formatSpikeTime(window.bucket)} (${window.message_count})`)
+                          .join(', ')}
+                      </span>
+                    </div>
+                  ) : null}
+                  <div className="summary-markdown">
+                    <ReactMarkdown>{summary.summary_text}</ReactMarkdown>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </>
+      )}
     </section>
   );
 }

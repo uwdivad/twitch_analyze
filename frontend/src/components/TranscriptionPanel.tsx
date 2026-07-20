@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mic } from 'lucide-react';
+import { ChevronDown, Mic } from 'lucide-react';
 
 import type { TranscriptionJob } from '../types';
 
@@ -22,12 +22,19 @@ export function TranscriptionPanel({
 }: TranscriptionPanelProps) {
   const [channel, setChannel] = React.useState(defaultChannel);
   const [durationMinutes, setDurationMinutes] = React.useState(10);
+  const [collapsed, setCollapsed] = React.useState(true);
 
   React.useEffect(() => {
     if (defaultChannel) {
       setChannel(defaultChannel);
     }
   }, [defaultChannel]);
+
+  React.useEffect(() => {
+    if (job || error) {
+      setCollapsed(false);
+    }
+  }, [job, error]);
 
   const cleanChannel = channel.trim().replace(/^#/, '');
   const canStart = cleanChannel.length > 0 && !isStarting;
@@ -39,48 +46,63 @@ export function TranscriptionPanel({
           <h2>Streamer Audio</h2>
           <span>{job ? `${job.channel_login} · ${job.status}` : 'Timed live transcription'}</span>
         </div>
-        {job ? <span>{formatJobWindow(job)}</span> : null}
-      </div>
-      {error ? <div className="summary-error">{error}</div> : null}
-      <form
-        className="transcription-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (canStart) {
-            onStart(cleanChannel, durationMinutes);
-          }
-        }}
-      >
-        <label>
-          <span>Channel</span>
-          <input
-            autoComplete="off"
-            inputMode="text"
-            pattern="[A-Za-z0-9_]+"
-            placeholder="twitch channel"
-            value={channel}
-            onChange={(event) => setChannel(event.target.value)}
-          />
-        </label>
-        <label>
-          <span>Transcribe for</span>
-          <select
-            value={durationMinutes}
-            onChange={(event) => setDurationMinutes(Number(event.target.value))}
+        <div className="summary-actions">
+          {job ? <span className="transcription-window">{formatJobWindow(job)}</span> : null}
+          <button
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? 'Expand transcription controls' : 'Collapse transcription controls'}
+            className={`button-ghost collapse-toggle${collapsed ? ' is-collapsed' : ''}`}
+            onClick={() => setCollapsed((current) => !current)}
+            type="button"
           >
-            {DURATION_OPTIONS.map((minutes) => (
-              <option key={minutes} value={minutes}>
-                {minutes} minutes
-              </option>
-            ))}
-          </select>
-        </label>
-        <button disabled={!canStart} type="submit">
-          <Mic size={16} />
-          {isStarting ? 'Starting' : 'Start'}
-        </button>
-      </form>
-      {job ? <div className="transcription-status">{job.detail || statusText(job)}</div> : null}
+            <ChevronDown size={16} />
+          </button>
+        </div>
+      </div>
+      {collapsed ? null : (
+        <>
+          {error ? <div className="summary-error">{error}</div> : null}
+          <form
+            className="transcription-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (canStart) {
+                onStart(cleanChannel, durationMinutes);
+              }
+            }}
+          >
+            <label>
+              <span>Channel</span>
+              <input
+                autoComplete="off"
+                inputMode="text"
+                pattern="[A-Za-z0-9_]+"
+                placeholder="twitch channel"
+                value={channel}
+                onChange={(event) => setChannel(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Transcribe for</span>
+              <select
+                value={durationMinutes}
+                onChange={(event) => setDurationMinutes(Number(event.target.value))}
+              >
+                {DURATION_OPTIONS.map((minutes) => (
+                  <option key={minutes} value={minutes}>
+                    {minutes} minutes
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button disabled={!canStart} type="submit">
+              <Mic size={16} />
+              {isStarting ? 'Starting' : 'Start'}
+            </button>
+          </form>
+          {job ? <div className="transcription-status">{job.detail || statusText(job)}</div> : null}
+        </>
+      )}
     </section>
   );
 }

@@ -24,21 +24,26 @@ input {
 
 .shell {
   min-height: 100vh;
-  padding: 22px;
+  padding: 0 22px 22px;
   background:
     linear-gradient(180deg, rgba(145, 70, 255, 0.18), rgba(14, 14, 16, 0) 300px),
     #0e0e10;
 }
 
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
   min-height: 64px;
-  padding: 0 6px 18px;
-  margin-bottom: 10px;
+  padding: 12px 28px;
+  margin: 0 -22px 12px;
   border-bottom: 1px solid #2f2b3a;
+  background: rgba(14, 14, 16, 0.86);
+  backdrop-filter: blur(8px);
 }
 
 h1,
@@ -49,14 +54,15 @@ p {
 
 h1 {
   color: #ffffff;
-  font-size: 30px;
+  font-size: 22px;
   font-weight: 800;
-  line-height: 1.1;
+  line-height: 1.2;
 }
 
 .topbar p {
-  margin-top: 6px;
+  margin-top: 2px;
   color: #adadb8;
+  font-size: 13px;
 }
 
 .live-state {
@@ -170,6 +176,11 @@ input:checked + .slider:before {
   transform: translateX(24px);
 }
 
+.switch input:focus-visible + .slider {
+  outline: 2px solid #bf94ff;
+  outline-offset: 2px;
+}
+
 select,
 input,
 button {
@@ -189,7 +200,6 @@ input {
 select:hover,
 input:hover {
   border-color: #9146ff;
-  box-shadow: 0 0 8px rgba(145, 70, 255, 0.25);
 }
 
 select:focus,
@@ -222,6 +232,48 @@ button:disabled,
 select:disabled {
   cursor: not-allowed;
   opacity: 0.58;
+}
+
+button.button-ghost {
+  background: transparent;
+  border-color: #3b3b44;
+  color: #dedee3;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+button.button-ghost:hover:not(:disabled) {
+  background: rgba(145, 70, 255, 0.12);
+  border-color: #9146ff;
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.collapse-toggle {
+  width: 36px;
+  padding: 0;
+  justify-content: center;
+}
+
+.collapse-toggle svg {
+  transition: transform 0.2s ease-in-out;
+}
+
+.collapse-toggle.is-collapsed svg {
+  transform: rotate(-90deg);
+}
+
+.controls-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.controls-updated {
+  color: #adadb8;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 button:disabled svg {
@@ -284,6 +336,24 @@ button:disabled svg {
   margin-top: 4px;
   color: #ffffff;
   font-size: 24px;
+}
+
+.metric small {
+  display: block;
+  margin-top: 2px;
+  color: #7a7a85;
+  font-size: 11px;
+}
+
+.dashboard-layout {
+  margin-bottom: 14px;
+}
+
+.dashboard-layout.with-feed {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  gap: 14px;
+  align-items: start;
 }
 
 .grid {
@@ -371,6 +441,15 @@ button:disabled svg {
 
 .channel-charts {
   margin-bottom: 14px;
+}
+
+.channel-chart-card.is-empty {
+  opacity: 0.55;
+}
+
+.channel-chart-heading span em {
+  color: #8a8a95;
+  font-style: normal;
 }
 
 .section-heading {
@@ -547,18 +626,117 @@ button:disabled svg {
   overflow-wrap: anywhere;
 }
 
-.summary-card pre {
-  margin: 12px 0 0;
-  overflow: auto;
-  white-space: pre-wrap;
+.summary-markdown {
+  margin-top: 12px;
   overflow-wrap: anywhere;
   color: #efeff1;
-  font: inherit;
-  line-height: 1.5;
+  line-height: 1.55;
+}
+
+.summary-markdown > :first-child {
+  margin-top: 0;
+}
+
+.summary-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.summary-markdown h1,
+.summary-markdown h2,
+.summary-markdown h3,
+.summary-markdown h4 {
+  margin: 14px 0 6px;
+  color: #ffffff;
+  font-size: 15px;
+}
+
+.summary-markdown p {
+  margin: 8px 0;
+}
+
+.summary-markdown ul,
+.summary-markdown ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.summary-markdown li {
+  margin: 4px 0;
+}
+
+.summary-markdown code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #26262c;
+  font-size: 13px;
+}
+
+.summary-skeleton {
+  display: grid;
+  gap: 10px;
+}
+
+.skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #26262c 25%, #34343c 50%, #26262c 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.transcription-window {
+  color: #adadb8;
+  font-size: 13px;
 }
 
 .feed-panel {
   min-height: 360px;
+}
+
+.feed-heading-tools {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.feed-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #adadb8;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.feed-filter input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #9146ff;
+}
+
+.feed-wrap {
+  position: relative;
+  min-height: 0;
+}
+
+.feed-resume {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 5;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
 .feed {
@@ -567,12 +745,51 @@ button:disabled svg {
   scrollbar-color: #53535f #18181b;
 }
 
+.dashboard-side .feed-panel {
+  position: sticky;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 100px);
+  min-height: 0;
+}
+
+.dashboard-side .feed-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.dashboard-side .feed {
+  flex: 1;
+  max-height: none;
+}
+
 .message-row {
   display: grid;
-  grid-template-columns: 88px 140px 180px minmax(0, 1fr);
+  grid-template-columns: 72px 140px 180px minmax(0, 1fr);
   gap: 12px;
   padding: 10px 16px;
   border-bottom: 1px solid #26262c;
+}
+
+.message-row.single-channel {
+  grid-template-columns: 72px 180px minmax(0, 1fr);
+}
+
+/* In the narrow sidebar, lay rows out IRC-style: meta line, then the message. */
+.dashboard-side .message-row,
+.dashboard-side .message-row.single-channel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 8px 14px;
+}
+
+.dashboard-side .message-row p {
+  flex-basis: 100%;
 }
 
 .message-row:hover {
@@ -609,6 +826,31 @@ button:disabled svg {
   color: #adadb8;
 }
 
+@media (max-width: 1360px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .chart-panel {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1200px) {
+  .dashboard-layout.with-feed {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-side .feed-panel {
+    position: static;
+    max-height: none;
+  }
+
+  .dashboard-side .feed {
+    max-height: 520px;
+  }
+}
+
 @media (max-width: 980px) {
   .metrics,
   .grid {
@@ -622,10 +864,18 @@ button:disabled svg {
 
 @media (max-width: 720px) {
   .shell {
-    padding: 18px;
+    padding: 0 18px 18px;
   }
 
-  .topbar,
+  .topbar {
+    margin: 0 -18px 12px;
+    padding: 12px 18px;
+  }
+
+  .controls-status {
+    margin-left: 0;
+  }
+
   .controls,
   .transcription-form,
   .summary-heading,

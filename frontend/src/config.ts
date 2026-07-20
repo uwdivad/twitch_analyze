@@ -1,4 +1,22 @@
 export const RECENT_MESSAGE_LIMIT = 500;
+
+// Common chat/service bots, matched against lowercase chatter_login.
+export const KNOWN_BOTS = new Set([
+  'streamelements',
+  'nightbot',
+  'fossabot',
+  'moobot',
+  'streamlabs',
+  'soundalerts',
+  'sery_bot',
+  'wizebot',
+  'botrix',
+  'pokemoncommunitygame',
+  'own3d',
+  'creatisbot',
+  'blerp',
+  'lumiastream'
+]);
 export const LIVE_FEED_RENDER_LIMIT = 100;
 export const MAX_LIVE_MESSAGES_PER_FLUSH = 1000;
 

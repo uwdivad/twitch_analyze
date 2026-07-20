@@ -377,3 +377,33 @@ cd frontend && npm run build
 ```
 
 Result: passed. Also manually verified with `curl -D - http://127.0.0.1:8000/api/messages/stream` that the response is `200` with `content-type: text/event-stream` and a chunked body.
+
+## 2026-07-19 - Dashboard UI/UX Overhaul
+
+### Reason
+
+The dashboard stacked every panel in one long column, burying the live feed below rarely-used panels. The main chart plotted two unlabeled series on a category axis that silently compressed multi-hour data gaps, several control labels were ambiguous ("Display data", "Chart window"), metric cards lacked units/scope, Markdown summaries rendered as raw text in a `<pre>`, and the live feed had wrapping timestamps, no bot filtering, and shifted rows under the reader on every flush.
+
+### Change
+
+Frontend-only, in `frontend/src`:
+
+- **Layout**: two-column desktop layout — analytics on the left, Live Feed as a sticky right column (`.dashboard-layout` in `styles.css`, stacks to one column under 1200px). Chat Summary and Streamer Audio panels are collapsible and default collapsed (auto-expand on activity). Compact sticky topbar.
+- **Messages Per Minute chart** (`VolumeChart.tsx`): legend and named series, minute-granularity axis labels, quiet minutes zero-filled and data clipped to the selected window so the time axis no longer hides gaps.
+- **Live Feed** (`LiveFeed.tsx`): 24-hour timestamps, channel column hidden when a single channel is selected, "Hide bots" toggle (shared `KNOWN_BOTS` list in `config.ts`, also filters Top Chatters), and scroll-to-pause with an "N new" resume pill so rows stop shifting while reading history.
+- **Labels**: "Chart window" → "Time window", "Display data" → "Update every", "Live feed" → "Live updates" (it gates the SSE connection, not just the feed); metric cards gained scope/unit sublabels.
+- **Summaries** (`SummaryPanel.tsx`): summary text rendered as Markdown via `react-markdown` (new dependency), skeleton shown while generating, generate controls hidden until a channel is selected.
+- **Channel Volume** (`ChannelVolumeCharts.tsx`): cards sorted by activity, peak rate shown, no-data cards dimmed.
+- **Misc**: favicon added (`index.html`), visible focus state and `aria-label` for the toggle switch, manual Refresh demoted to a ghost button next to an "Updated Ns ago" indicator, hover glow removed from inputs.
+
+### Result
+
+The live feed is visible alongside the analytics instead of below the fold, the volume chart is honest about gaps and legible without guessing what each line is, summaries render as formatted Markdown, and high-volume feeds can be read without rows moving underfoot.
+
+### Verification
+
+```bash
+cd frontend && npm run build
+```
+
+Result: passed. Also manually verified against the live stack (all-channels and single-channel views, bot filter, feed pause/resume pill, collapsible panels, 1440px and 390px viewports) via a local Vite server on port 5174, since the Dockerized frontend's bind mount was in a broken state at the time.
