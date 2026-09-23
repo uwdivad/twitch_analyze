@@ -405,13 +405,15 @@ def test_normalize_comment_emote_position_after_emoji_and_id_fallback() -> None:
 @pytest.mark.anyio
 async def test_iter_comment_pages_stops_when_offset_stalls(no_sleep: list[float]) -> None:
     calls: list[Any] = []
+    stalled = vod_replay.MAX_STALLED_PAGES
+    # First page sets the best offset (10); then `stalled` pages with fresh ids whose
+    # offsets never exceed it (alternating 10 and 9); then a page that would progress.
+    ids = [f"a{index}" for index in range(stalled + 1)]
+    offsets = [10] + [10 if index % 2 else 9 for index in range(stalled)]
     responses = [
-        comments_response(["a1"], has_next=True, offsets=[10]),
-        comments_response(["a2"], has_next=True, offsets=[10]),
-        comments_response(["a3"], has_next=True, offsets=[9]),
-        comments_response(["a4"], has_next=True, offsets=[10]),
-        comments_response(["never"], has_next=False, offsets=[11]),
-    ]
+        comments_response([node_id], has_next=True, offsets=[offset])
+        for node_id, offset in zip(ids, offsets, strict=True)
+    ] + [comments_response(["never"], has_next=False, offsets=[11])]
 
     async def fetch_json(body: Any) -> Any:
         calls.append(body)
@@ -420,9 +422,29 @@ async def test_iter_comment_pages_stops_when_offset_stalls(no_sleep: list[float]
     async with make_client(fetch_json) as client:
         pages = [page async for page in client.iter_comment_pages("1")]
 
-    # New ids keep arriving, but offsets never pass 10: stop after 3 stalled pages.
-    assert [[node["id"] for node in page] for page in pages] == [["a1"], ["a2"], ["a3"], ["a4"]]
-    assert len(calls) == 4
+    assert stalled == 25
+    assert [[node["id"] for node in page] for page in pages] == [[node_id] for node_id in ids]
+    assert len(calls) == stalled + 1
+
+
+@pytest.mark.anyio
+async def test_iter_comment_pages_tolerates_long_same_second_bursts(no_sleep: list[float]) -> None:
+    # One page short of the stall limit at the same offset, then progress: paging continues.
+    stalled = vod_replay.MAX_STALLED_PAGES
+    ids = [f"a{index}" for index in range(stalled)]
+    responses = [comments_response([node_id], has_next=True, offsets=[10]) for node_id in ids]
+    responses.append(comments_response(["z"], has_next=False, offsets=[11]))
+    calls = 0
+
+    async def fetch_json(body: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return responses[calls - 1]
+
+    async with make_client(fetch_json) as client:
+        pages = [page async for page in client.iter_comment_pages("1")]
+
+    assert [[node["id"] for node in page] for page in pages] == [[node_id] for node_id in ids] + [["z"]]
 
 
 class _FakeResponse:

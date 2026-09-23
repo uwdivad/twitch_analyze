@@ -45,7 +45,9 @@ PERSISTED_QUERY_NOT_FOUND = "PersistedQueryNotFound"
 MAX_BACKOFF_SECONDS = 30
 REQUEST_TIMEOUT_SECONDS = 30
 # Consecutive pages whose max contentOffsetSeconds does not advance before paging gives up.
-MAX_STALLED_PAGES = 3
+# Pages hold ~60 comments, so 25 pages (~1500 comments in one second) means a stuck cursor,
+# not a real chat burst.
+MAX_STALLED_PAGES = 25
 # GQL-level errors Twitch returns with HTTP 200 that are worth retrying (lowercase substrings).
 TRANSIENT_GQL_ERRORS = ("service timeout", "service error", "service unavailable")
 INTEGRITY_CHECK_ERROR = "failed integrity check"
