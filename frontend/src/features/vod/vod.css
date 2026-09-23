@@ -1,0 +1,604 @@
+/* VOD analysis view. Only .vod-* selectors live here. Visual treatment of the
+   shared primitives (.btn, .field, .card, .stat, .skeleton, .tooltip-card, ...)
+   comes from the global theme, so these rules stick to layout plus the
+   view-specific pieces (activity bar, peak rows, status/progress, errors).
+   Everything reads design tokens so the light/dark toggle applies. */
+
+.vod-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5) var(--space-7);
+  color: var(--fg);
+  font-family: var(--font-body);
+}
+
+.vod-view .muted {
+  color: var(--fg-muted);
+}
+
+.vod-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.vod-small {
+  font-size: 12px;
+}
+
+.vod-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Hero */
+
+.vod-hero h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.vod-hero h1 .muted {
+  font-weight: 500;
+}
+
+/* Form */
+
+.vod-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.vod-form-input {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.vod-form-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.vod-form-check input {
+  accent-color: var(--accent);
+}
+
+.vod-form-submit {
+  flex: none;
+  color: #fff; /* white on Twitch purple in both themes */
+}
+
+/* Status + errors */
+
+.vod-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+}
+
+.vod-status-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+}
+
+.vod-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  animation: vod-pulse 1.4s var(--ease) infinite;
+}
+
+.vod-status-detail {
+  margin: 0;
+  font-size: 12px;
+}
+
+.vod-progress {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--input);
+}
+
+.vod-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 400ms var(--ease);
+}
+
+.vod-progress.is-indeterminate .vod-progress-fill {
+  width: 30%;
+  animation: vod-indeterminate 1.4s var(--ease) infinite;
+}
+
+.vod-error {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* Meta */
+
+.vod-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.vod-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.vod-meta p {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* Player + activity bar */
+
+.vod-stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.vod-player {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: #000; /* video letterbox is black regardless of theme */
+}
+
+.vod-player-frame,
+.vod-player-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.vod-player-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.vod-player-failed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: var(--surface-raised);
+  text-align: center;
+  font-size: 14px;
+}
+
+.vod-activity {
+  position: relative;
+  width: 100%;
+  height: 120px;
+  user-select: none;
+}
+
+.vod-activity-svg {
+  display: block;
+  overflow: visible;
+  cursor: pointer;
+}
+
+.vod-activity-hit {
+  fill: transparent;
+}
+
+.vod-activity-baseline {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.vod-bar {
+  fill: var(--accent);
+  opacity: 0.55;
+}
+
+.vod-bar.is-peak {
+  opacity: 1;
+}
+
+.vod-activity-hover {
+  fill: var(--fg);
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+.vod-tick line {
+  stroke: var(--border-strong);
+}
+
+.vod-tick text {
+  fill: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.vod-peak-marker {
+  cursor: pointer;
+  outline: none;
+}
+
+.vod-peak-hit {
+  fill: transparent;
+}
+
+.vod-peak-marker:focus-visible .vod-peak-hit {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.vod-peak-line {
+  stroke: var(--live);
+  stroke-width: 1.5;
+}
+
+.vod-peak-flag {
+  fill: var(--live);
+}
+
+.vod-peak-text {
+  fill: var(--fg-muted);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.vod-peak-marker:hover .vod-peak-text,
+.vod-peak-marker:focus-visible .vod-peak-text {
+  fill: var(--fg);
+}
+
+.vod-peak-marker:hover .vod-peak-line,
+.vod-peak-marker:focus-visible .vod-peak-line {
+  stroke-width: 2.5;
+}
+
+.vod-playhead {
+  stroke: var(--fg);
+  stroke-width: 2;
+}
+
+.vod-activity-skeleton {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 30px;
+  height: 70px;
+  pointer-events: none;
+}
+
+.vod-activity-tooltip {
+  position: absolute;
+  bottom: calc(100% - 26px);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Two-column row */
+
+.vod-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.vod-peaks,
+.vod-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-4);
+}
+
+.vod-card-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.vod-card-heading h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.vod-card-heading .muted {
+  font-size: 12px;
+}
+
+.vod-empty {
+  margin: 0;
+  font-size: 13px;
+}
+
+.vod-peak-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vod-peak-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms var(--ease), border-color 150ms var(--ease);
+}
+
+.vod-peak-row:hover {
+  background: var(--card-hover);
+}
+
+.vod-peak-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.vod-peak-row.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.vod-peak-time {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.vod-peak-row.is-active .vod-peak-time {
+  color: var(--accent-text);
+}
+
+.vod-peak-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vod-peak-title {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vod-peak-keywords {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vod-peak-rate {
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Side card */
+
+.vod-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.vod-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.vod-stat-label {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vod-stat-value {
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.vod-side-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.vod-label-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+/* Recent analyses */
+
+.vod-idle {
+  max-width: 560px;
+}
+
+.vod-recent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.vod-recent ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vod-recent-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms var(--ease);
+}
+
+.vod-recent-row:hover {
+  background: var(--card-hover);
+}
+
+.vod-recent-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.vod-recent-row.is-active {
+  border-color: var(--border-strong);
+  background: var(--card-hover);
+}
+
+.vod-recent-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Responsive */
+
+@media (max-width: 980px) {
+  .vod-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .vod-view {
+    padding: var(--space-5) var(--space-4) var(--space-6);
+  }
+
+  .vod-form {
+    flex-wrap: wrap;
+  }
+
+  .vod-form-input {
+    flex-basis: 100%;
+  }
+
+  .vod-form-submit {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .vod-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@keyframes vod-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes vod-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vod-status-dot,
+  .vod-progress.is-indeterminate .vod-progress-fill {
+    animation: none;
+  }
+
+  .vod-progress-fill,
+  .vod-peak-row,
+  .vod-recent-row {
+    transition: none;
+  }
+}
