@@ -125,6 +125,7 @@ Likely tables:
 - `chat_messages`
 - `chat_interval_stats`
 - `chat_summaries`
+- `vod_analyses` (one row per analyzed VOD, `ReplacingMergeTree(updated_at)` ordered by `video_id`, peaks stored as JSON)
 
 The `chat_messages` table should be append-only and optimized around channel/session/time queries. A likely ordering key is:
 
@@ -133,6 +134,16 @@ The `chat_messages` table should be append-only and optimized around channel/ses
 ```
 
 Partitioning should be date-based, with the exact granularity chosen once expected volume is clearer.
+
+## VOD Chat Replay
+
+VOD analysis imports a past broadcast's chat replay and finds its activity peaks. The import counts as chat ingestion, so it follows the same rule as live chat: the backend normalizes replay comments into `ChatMessage`s and publishes them to `twitch.chat.messages`. The ClickHouse consumer worker inserts them. The API never writes replay chat straight to ClickHouse. This keeps one write path, lets Kafka absorb the burst of a multi-hour import (a 3.4 h VOD is ~21k messages in under two minutes), and makes re-imports safe: `ReplacingMergeTree` plus `uniqExact(message_id)` reads mean that re-publishing the same comments doesn't double-count them.
+
+The `chat_messages.source` column (`LowCardinality(String) DEFAULT 'live'`) separates the two kinds of rows. Live dashboard queries filter `source='live'`, so importing a VOD never moves live totals, charts or top lists, even for a channel that is also being ingested live. VOD queries filter by `session_id = 'vod:<video_id>'` and `source='vod'`. Replay rows keep the original air time in `event_ts` (VOD `createdAt` plus the comment's content offset), so activity buckets line up with the video timeline. Because of that, the 180-day TTL is keyed on `received_at` instead of `event_ts`: with an `event_ts` TTL, an imported VOD older than the retention window would expire right after insert. The init SQL only runs on a fresh volume, so `ClickHouseRepository.ensure_vod_schema()` migrates existing volumes idempotently (add the column, re-key the TTL without rewriting existing parts, create `vod_analyses`). The API lifespan and the consumer worker both run it at startup. The worker retries until it succeeds, because its inserts include the `source` column.
+
+Since the analysis reads the chat back from ClickHouse, the service waits after producing. It calls `flush()` on the shared Kafka producer, then polls `uniqExact(message_id)` for the VOD session until the stored count stops changing and reaches at least 98% of the fetched count (`VOD_CATCHUP_*` settings, 15 min timeout). A catch-up timeout is recorded as a failed analysis. Re-submitting that VOD skips the fetch and only waits again. Any other failure re-fetches.
+
+Chat replay comes from Twitch's undocumented web GQL API (`VideoCommentsByOffsetOrCursor` persisted query, paged by cursor). That API can change or start rejecting clients without notice. The endpoint, `Client-Id` and query hash are therefore settings (`TWITCH_GQL_URL`, `TWITCH_GQL_CLIENT_ID`, `TWITCH_GQL_COMMENTS_QUERY_HASH`), and all GQL-shape knowledge lives in `app/ingestion/vod_replay.py`. As of 2026-09, the browser web client id fails Twitch's integrity check on cursor pages after the first page. The default is the client id TwitchDownloader uses, which does not. Treat this path as best-effort, not a guaranteed data source.
 
 ## Realtime Frontend
 

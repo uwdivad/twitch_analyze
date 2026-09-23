@@ -95,6 +95,7 @@ erDiagram
     STREAM_SESSIONS ||--o{ CHAT_MESSAGES : contains
     STREAM_SESSIONS ||--o{ CHAT_INTERVAL_STATS : aggregates
     STREAM_SESSIONS ||--o{ CHAT_SUMMARIES : summarizes
+    VOD_ANALYSES ||--o{ CHAT_MESSAGES : "reads session vod:video_id"
 
     CHANNELS {
         string channel_id
@@ -123,6 +124,24 @@ erDiagram
         json raw_event
         datetime event_ts
         datetime received_at
+        string source "live | vod"
+    }
+
+    VOD_ANALYSES {
+        string video_id
+        string channel_id
+        string channel_login
+        string title
+        datetime video_created_at
+        int duration_seconds
+        int bucket_seconds
+        int message_count
+        int unique_chatter_count
+        string status
+        json peaks
+        string label_model
+        datetime analyzed_at
+        datetime updated_at
     }
 
     CHAT_INTERVAL_STATS {
@@ -149,7 +168,40 @@ erDiagram
     }
 ```
 
-Current implementation writes `chat_messages`. `channels`, `stream_sessions`, `chat_interval_stats`, and `chat_summaries` describe the intended model for later persistence and rollup work.
+Current implementation writes `chat_messages`, `chat_summaries` and `vod_analyses`. `channels`, `stream_sessions` and `chat_interval_stats` describe the intended model for later persistence and rollup work. `chat_messages.source` is `live` for ingested chat and `vod` for imported chat replay. Live dashboard queries filter `source='live'`. VOD rows use `session_id = vod:<video_id>` and keep the original air time in `event_ts`.
+
+## VOD Analysis Flow
+
+```mermaid
+sequenceDiagram
+    participant UI as VodView (React)
+    participant API as FastAPI /api/vods
+    participant Svc as VodAnalysisService
+    participant GQL as Twitch web GQL
+    participant Kafka as Kafka twitch.chat.messages
+    participant Consumer as ClickHouse Consumer
+    participant CH as ClickHouse
+
+    UI->>API: POST /api/vods/analyze {video}
+    API-->>UI: 202 job (or stored completed analysis)
+    API->>Svc: background task
+    Svc->>GQL: video metadata + comment pages (cursor)
+    GQL-->>Svc: replay comments
+    Svc->>Svc: normalize (source=vod, session_id=vod:id, event_ts=air time)
+    Svc->>Kafka: publish, then flush()
+    Kafka-->>Consumer: consume in batches
+    Consumer->>CH: insert chat_messages
+    Svc->>CH: poll uniqExact(message_id) until caught up
+    Svc->>CH: bucket activity, peak context
+    Svc->>Svc: detect peaks + heuristic labels
+    Svc->>CH: upsert vod_analyses
+    loop until completed/failed
+        UI->>API: GET /api/vods/{id}
+    end
+    UI->>API: GET /api/vods/{id}/activity
+    UI->>UI: Twitch embed + activity bar + peak list
+    UI->>API: POST /api/vods/{id}/label (optional, OpenAI titles)
+```
 
 ## Flow Notes
 

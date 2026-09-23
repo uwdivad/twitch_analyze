@@ -9,6 +9,8 @@ Twitch Analyze is a realtime Twitch chat analytics app. It ingests live chat, st
 - ⚡ Stores analytics data in ClickHouse.
 - 📊 Shows live and historical chat metrics in a React UI.
 - 🤖 Can generate chat summaries and stream transcripts when OpenAI features are enabled.
+- 🎬 Finds the moments chat went wild in past broadcasts (VOD analysis).
+- 🌗 Light and dark themes (toggle in the top bar; follows the system setting until you pick one).
 - 🚀 Includes Docker Compose, local Kubernetes manifests, and Terraform notes for deployment practice.
 
 ## Stack 🛠️
@@ -35,6 +37,14 @@ Then open:
 - Grafana: http://localhost:3000
 
 Set `TWITCH_CHANNELS` in `.env` to start ingesting live chat. The default IRC mode can read public chat without Twitch credentials.
+
+## VOD Analysis 🎬
+
+Open the **VODs** tab and paste a Twitch VOD URL or video id. The backend downloads the VOD's chat replay from Twitch and sends it through the same Kafka topic and ClickHouse consumer as live chat, stored with `source='vod'` so live dashboard numbers stay untouched. Then it finds chat-activity peaks. The view shows the embedded Twitch player, an activity bar with the peaks marked (click one to jump to it), and a peak list. **Label peaks with AI** adds short titles when `OPENAI_API_KEY` is set. Without a key you still get keyword labels like `LUL · xdd · 9.8 msg/s`.
+
+The Twitch player embed only loads on `localhost` or an HTTPS domain. Open the dashboard at `http://localhost:5173`, not `127.0.0.1` or a LAN IP. Chat replay comes from Twitch's undocumented web GQL API. If Twitch changes it, update `TWITCH_GQL_CLIENT_ID` / `TWITCH_GQL_COMMENTS_QUERY_HASH` in `.env`.
+
+![VOD analysis](docs/screenshots/vod-view-dark-1440.png)
 
 ## Useful Commands 🧪
 

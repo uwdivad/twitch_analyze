@@ -441,3 +441,57 @@ python scripts/start.py --help           # parses; Windows paths resolve
 ```
 
 Note: backend tests now run only on the asyncio anyio backend (`tests/conftest.py`) — trio (a transitive streamlink dependency) previously duplicated every async test against a backend the app doesn't use.
+
+## 2026-09-23 - VOD Chat-Peak Analysis and UI Overhaul
+
+### Reason
+
+The dashboard only covered live chat. There was no way to look back at a past broadcast and find the moments chat reacted to. The UI also hard-coded one dark palette in a single 900-line `styles.css`, which had no shared primitives and no theme choice.
+
+### Change
+
+**VOD replay ingestion** (`backend/app/ingestion/vod_replay.py`): `TwitchGqlClient` reads VOD metadata and cursor-paged chat replay from Twitch's web GQL API, with retries for 429, 5xx and transient GQL errors, a guard against stalled cursors, and dedup at page boundaries. `normalize_comment` converts each comment to a `ChatMessage` with `source='vod'`, `session_id='vod:<video_id>'` and `event_ts` set to the original air time (`createdAt` plus the content offset). Replay chat is published to the normal `twitch.chat.messages` topic and inserted by the existing ClickHouse consumer. It does not bypass Kafka. The GQL URL, client id and query hash are settings. The default client id is TwitchDownloader's (`kd1unb4b3q4t58fwlpcbzcbnm76a8fp`) because the browser web id now fails Twitch's integrity check on the second page.
+
+**Storage** (`sql/init-clickhouse.sql`, `k8s/local`, `storage/clickhouse.py`, `storage/kafka.py`, `workers/clickhouse_consumer.py`): new `chat_messages.source LowCardinality(String) DEFAULT 'live'` column. All live dashboard queries now filter `source='live'`, and VOD queries filter by `session_id` and `source='vod'`. The 180-day TTL moved from `event_ts` to `received_at`, so imported chat from old VODs doesn't expire on insert. New `vod_analyses` table (`ReplacingMergeTree(updated_at)`, ordered by `video_id`, peaks as JSON). `ensure_vod_schema()` is an idempotent runtime migration (add column, re-key TTL with `materialize_ttl_after_modify=0`, create table) that runs at startup in both the API and the consumer worker. The worker retries it with backoff. Both processes log `VOD schema ensured ...`. `KafkaJsonProducer.flush()` was added.
+
+**Analysis** (`backend/app/services/vod_analysis.py`, `models/vod.py`): `VodAnalysisService` runs fetch, publish, `flush()`, consumer catch-up wait (stable `uniqExact` count at 98% or more of the fetched count, 15 min timeout), then bucketing (5 s up to `VOD_MAX_BUCKETS`), peak detection and `vod_analyses` upsert. The job reports progress on an in-memory `VodAnalysisJob`. Peak detection smooths the counts with a 3-point moving average, then computes a robust z-score against a rolling median and MAD over a ~10-minute window (sigma is at least the Poisson floor). It keeps local maxima with z >= 3 and at least 1.5x the baseline, enforces a 90 s minimum gap, caps results at `VOD_MAX_PEAKS`, and grows extents to 35% of the height above the baseline (at most 120 s per side). Each peak gets top emotes, top tokens, sample messages and a heuristic label (for example `LUL · xdd · 9.8 msg/s`). `VodLabelService` can add OpenAI titles (`OPENAI_VOD_LABEL_MODEL`, which falls back to the summary model).
+
+**API** (`backend/app/api/routes.py`, `main.py`): `POST /api/vods/analyze` returns 202 with a job. It returns the stored completed analysis with no job unless `force` is set. It enforces a concurrency cap (429) and skips the fetch on a re-run after a catch-up timeout. Also added: `GET /api/vods`, `GET /api/vods/{id}`, `GET /api/vods/{id}/activity` (optional `bucket_seconds`, capped at 3600 buckets) and `POST /api/vods/{id}/label`. The lifespan calls `ensure_vod_schema()` once after connecting and cancels running VOD tasks on shutdown.
+
+**Frontend VOD view** (`frontend/src/features/vod/**`, `api/vods.ts`, `twitch-embed.d.ts`): a URL/id form with force re-import, a live job status and progress bar (fetching, ingesting, analyzing), and the Twitch player embed. An SVG activity bar shows bars, highlighted peak extents, labelled peak markers with collision avoidance, a clamped hover tooltip and a playhead that follows playback. Clicking the bar or a marker seeks the player. The view also has a peak list (time, title or label, keywords, rate; the active peak is highlighted), a stats and bucket-size side card, "Label peaks with AI", and recent analyses. The open VOD is restored from sessionStorage when switching views or reloading. `VodView` is wrapped in `React.memo`.
+
+**UI overhaul** (`frontend/src/styles/{tokens,base,components,layout}.css` replace `styles.css`; `components/ui/*`; `hooks/useTheme.ts`, `useThemeColors.ts`): light and dark design tokens and a theme toggle (follows the system setting until the user picks a theme, then localStorage; `data-theme` on `<html>`), plus shared primitives (Button, Card, Segmented, ChartTooltip, SeriesLegend, ThemeToggle). Charts read token colors. A Live/VODs segmented nav is persisted in `location.hash` (`#live` / `#vods`). The UI font is Inter via `@fontsource-variable/inter`.
+
+**Integration fixes**: lazy `TODO(integration)` imports became top-level imports from `app.ingestion.vod_replay`. The VOD side-card stats had inherited the `.stat` primitive's padding and wrapped mid-number ("6,67 / 3"). The peak list showed the peak time but seeked to the start time and now shows the start time. At 390 px the peak list drops the rate column and narrows the time column so titles fit.
+
+Behavior notes:
+
+- The busy spinner only shows on buttons with `.is-busy`.
+- Panel-local state (collapsed/expanded, drafts) resets when switching between Live and VODs, because the inactive view unmounts. The open VOD itself is restored from sessionStorage.
+- `api/client.ts` now surfaces the backend `detail` text for failed GET requests (`HttpError`), not just the status code.
+- The client does not send `X-API-Key`, same as the summary and transcription POSTs. `require_api_key` is a no-op unless `API_AUTH_TOKEN` is set. If it is set, the VOD analyze and label POSTs are rejected like the others.
+- The Twitch embed's `parent` is the page hostname, so the player only loads on `localhost` or an HTTPS domain, not on `127.0.0.1` or a LAN IP.
+
+### Result
+
+A past broadcast can be analyzed from the VODs tab: chat replay flows through Kafka into ClickHouse, peaks are detected and labelled, and the embedded player jumps to each one. Live analytics are unaffected by imports. The whole dashboard supports light and dark themes on shared primitives.
+
+### Verification
+
+```bash
+cd backend && PYTHONPATH=. pytest      # 164 passed
+cd frontend && npm ci && npm run build # tsc + vite clean (existing >500 kB chunk warning only)
+docker compose config --quiet          # passed
+```
+
+End to end with `docker compose up --build` on an existing ClickHouse volume (469,747 live rows before the imports):
+
+- Migration: `DESCRIBE chat_messages` shows `source LowCardinality(String) DEFAULT 'live'`. `SHOW CREATE TABLE` shows `TTL toDateTime(received_at) + toIntervalDay(180)`. `vod_analyses` exists. The backend and worker both logged `VOD schema ensured`.
+- The first import failed after page 1 with `failed integrity check` on the browser web client id. Switching the default client id fixed it (commit "Use chat-replay GQL client id that passes integrity check").
+- Short VOD `2772087973` (pokimane, 30:14): 37 pages, 2,088 comments fetched and stored, completed in ~14 s. 2,044 messages inside the duration, 547 chatters, 5 s buckets, 3 peaks (`pokiHype · chocoChad · 4.4 msg/s` at 1:10, `pokiPOP · earthostepHehe · 4.4 msg/s` at 28:05, `<3 · pokiHype · 10 msg/s` at 29:55). `/activity`: 363 buckets, 357 non-zero, max 51. AI titles (`gpt-5.2`): "Birthday wishes and gifted subs", "Laughing at random lyrics", "Bye and happy birthday". Re-submitting without `force` returned the stored analysis with `job: null` (~0.1 s).
+- Multi-hour VOD `2876131003` (ludwig, 3:23:14): 375 pages, 21,533 comments fetched and stored in ~110 s. 21,507 messages, 3,632 chatters, 30 s buckets, 4 peaks. `/activity`: 407 buckets, all non-zero.
+- VOD `2840122882` (sodapoppin, 36:19), run through the UI: 6,765 comments, 6 peaks, AI-titled ("Look up at the sky", "Real voice reveal reactions", ...).
+- Live isolation: pokimane (not ingested live) still shows `message-total` 0 and empty volume, top chatters and top emotes after the import. The overall `message-total` (469,816) equals the `source='live'` row count exactly. `SELECT source, count()` gave `live 469816`, `vod 30386` (3 sessions).
+- UI (Playwright, compose frontend on `localhost:5173`): the Live view renders as before. The VODs tab went through the fetching and completed states. Clicking a peak marker seeked the embed to the peak start. The playhead advanced ~1 s/s during playback. "Label peaks with AI" filled the titles. The theme toggle restyles the VOD view. The hover tooltip stays inside the bar at both edges. There is no horizontal overflow at 390 px.
+
+Screenshots: `docs/screenshots/ui-overhaul-{dark,light}-1440.png`, `ui-overhaul-{dark,light}-390.png`, `ui-overhaul-{dark,light}-1440-sample-data.png`, `vod-view-dark-1440.png`, `vod-view-light-1440.png`, `vod-view-dark-390.png`.
