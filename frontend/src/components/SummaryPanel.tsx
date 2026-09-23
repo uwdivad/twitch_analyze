@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 import type { ChatSummary } from '../types';
@@ -56,17 +56,18 @@ export function SummaryPanel({ activeChannel, summaries, isLoading, error, onGen
     : 'Select a channel to generate summaries';
 
   return (
-    <section className="panel summary-panel">
-      <div className="panel-heading summary-heading">
-        <div>
-          <h2>Chat Summary</h2>
-          <span>{headingHint}</span>
+    <section className="card summary-panel">
+      <div className="card-heading summary-heading">
+        <div className="card-title">
+          <h2>Chat summary</h2>
+          <span className="card-meta">{headingHint}</span>
         </div>
-        <div className="summary-actions">
+        <div className="card-actions summary-actions">
           {activeChannel ? (
             <>
               <select
                 aria-label="Summary window"
+                className="field"
                 value={windowMinutes}
                 onChange={(event) => setWindowMinutes(Number(event.target.value))}
               >
@@ -76,7 +77,13 @@ export function SummaryPanel({ activeChannel, summaries, isLoading, error, onGen
                   </option>
                 ))}
               </select>
-              <button type="button" disabled={isLoading} onClick={() => onGenerate(windowMinutes)}>
+              <button
+                className={`btn btn-accent${isLoading ? ' is-busy' : ''}`}
+                type="button"
+                disabled={isLoading}
+                onClick={() => onGenerate(windowMinutes)}
+              >
+                <Sparkles size={16} />
                 {isLoading ? 'Generating' : 'Generate'}
               </button>
             </>
@@ -84,7 +91,7 @@ export function SummaryPanel({ activeChannel, summaries, isLoading, error, onGen
           <button
             aria-expanded={!collapsed}
             aria-label={collapsed ? 'Expand chat summaries' : 'Collapse chat summaries'}
-            className={`button-ghost collapse-toggle${collapsed ? ' is-collapsed' : ''}`}
+            className={`btn btn-ghost btn-icon collapse-toggle${collapsed ? ' is-collapsed' : ''}`}
             onClick={() => setCollapsed((current) => !current)}
             type="button"
           >
@@ -95,15 +102,15 @@ export function SummaryPanel({ activeChannel, summaries, isLoading, error, onGen
 
       {collapsed ? null : (
         <>
-          {error ? <div className="summary-error">{error}</div> : null}
+          {error ? <div className="alert summary-error">{error}</div> : null}
 
           <div className="summary-list">
             {isLoading ? (
-              <article className="summary-card summary-skeleton" aria-hidden="true">
-                <div className="skeleton-line" style={{ width: '40%' }} />
-                <div className="skeleton-line" style={{ width: '95%' }} />
-                <div className="skeleton-line" style={{ width: '88%' }} />
-                <div className="skeleton-line" style={{ width: '62%' }} />
+              <article className="card summary-card summary-skeleton" aria-hidden="true">
+                <div className="skeleton" style={{ width: '40%' }} />
+                <div className="skeleton" style={{ width: '95%' }} />
+                <div className="skeleton" style={{ width: '88%' }} />
+                <div className="skeleton" style={{ width: '62%' }} />
               </article>
             ) : null}
             {summaries.length === 0 && !isLoading ? (
@@ -112,7 +119,7 @@ export function SummaryPanel({ activeChannel, summaries, isLoading, error, onGen
               </div>
             ) : (
               summaries.map((summary) => (
-                <article key={summary.summary_id} className="summary-card">
+                <article key={summary.summary_id} className="card summary-card">
                   <header>
                     <strong>{formatSummaryWindow(summary)}</strong>
                     <span>

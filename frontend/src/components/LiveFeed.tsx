@@ -52,11 +52,11 @@ export function LiveFeed({ activeChannel, messages, hideBots, onHideBotsChange }
   }, []);
 
   return (
-    <section className="panel feed-panel">
-      <div className="panel-heading">
-        <h2>Live Feed</h2>
+    <section className="card feed-panel">
+      <div className="card-heading feed-heading">
+        <h2>Live feed</h2>
         <div className="feed-heading-tools">
-          <label className="feed-filter">
+          <label className="check feed-filter">
             <input
               checked={hideBots}
               onChange={(event) => onHideBotsChange(event.target.checked)}
@@ -64,14 +64,14 @@ export function LiveFeed({ activeChannel, messages, hideBots, onHideBotsChange }
             />
             Hide bots
           </label>
-          <span>
+          <span className="card-meta">
             {activeChannel ? `#${activeChannel}` : 'all channels'} · latest {displayedMessages.length}
           </span>
         </div>
       </div>
       <div className="feed-wrap">
         {isPaused && newCount > 0 ? (
-          <button className="feed-resume" onClick={handleResume} type="button">
+          <button className="btn btn-primary btn-sm feed-resume" onClick={handleResume} type="button">
             <ArrowUp size={14} />
             {newCount >= LIVE_FEED_RENDER_LIMIT ? `${LIVE_FEED_RENDER_LIMIT}+` : newCount} new
           </button>
@@ -89,10 +89,10 @@ export function LiveFeed({ activeChannel, messages, hideBots, onHideBotsChange }
               >
                 <time>{formatTime(message.event_ts)}</time>
                 {activeChannel ? null : (
-                  <span className="message-channel">{message.channel_display_name || message.channel_login}</span>
+                  <span className="pill pill-sm message-channel">{message.channel_display_name || message.channel_login}</span>
                 )}
-                <strong>{message.chatter_display_name || message.chatter_login}</strong>
-                <p>{message.message_text}</p>
+                <strong className="message-user">{message.chatter_display_name || message.chatter_login}</strong>
+                <p className="message-text">{message.message_text}</p>
               </article>
             ))
           )}
