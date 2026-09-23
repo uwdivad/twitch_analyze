@@ -396,8 +396,13 @@ class VodClickHouse:
         self.activity_kwargs = None
 
     async def get_vod_analysis(self, video_id):
+        import asyncio
+
+        await asyncio.sleep(0)  # yield like a real query so concurrent requests interleave
         if self.fail:
             raise RuntimeError("query failed")
+        if isinstance(self.analysis, dict):
+            return self.analysis.get(video_id)
         return self.analysis
 
     async def vod_message_count(self, session_id):
@@ -466,28 +471,75 @@ async def test_analyze_vod_returns_stored_completed_analysis_without_task() -> N
 
 
 @pytest.mark.anyio
-async def test_analyze_vod_starts_task_and_skips_fetch_when_chat_is_stored() -> None:
+async def test_analyze_vod_skips_fetch_only_after_catchup_failure() -> None:
+    import asyncio
+
+    from app.models.vod import AnalyzeVodRequest
+    from app.services.vod_analysis import CATCHUP_ERROR_PREFIX
+
+    cases = (
+        (f"{CATCHUP_ERROR_PREFIX} (stored 10 of 42)", True),
+        ("Twitch chat replay fetch failed: HTTP 500", False),
+        ("VOD has more than 5 chat comments", False),
+        ("RuntimeError", False),
+    )
+    for error, expected_skip in cases:
+        request = _vod_request()
+        service = FakeVodService()
+        failed = _vod_analysis(status="failed").model_copy(update={"error": error})
+
+        result = await _analyze(
+            request, AnalyzeVodRequest(video="123456"), VodClickHouse(analysis=failed, stored=42), service
+        )
+
+        assert result.job is not None
+        assert result.job.status == "queued"
+        assert "123456" in request.app.state.vod_tasks
+        await request.app.state.vod_tasks["123456"]
+        await asyncio.sleep(0)
+        assert service.calls == [("123456", expected_skip)], error
+        assert request.app.state.vod_tasks == {}
+
+
+@pytest.mark.anyio
+async def test_analyze_vod_concurrent_posts_start_one_run_at_cap() -> None:
     import asyncio
 
     from app.models.vod import AnalyzeVodRequest
 
     request = _vod_request()
     service = FakeVodService()
+    clickhouse = VodClickHouse()
+
+    results = await asyncio.gather(
+        *(
+            _analyze(request, AnalyzeVodRequest(video=video), clickhouse, service, vod_max_concurrent_jobs=1)
+            for video in ("1", "1", "2", "3")
+        ),
+        return_exceptions=True,
+    )
+    await asyncio.gather(*request.app.state.vod_tasks.values())
+
+    assert service.calls == [("1", False)]
+    assert list(request.app.state.vod_jobs) == ["1"]
+    assert results[0].job is not None and results[1].job is not None
+    assert results[0].job.video_id == results[1].job.video_id == "1"
+    assert [exc.status_code for exc in results[2:]] == [429, 429]
+
+
+@pytest.mark.anyio
+async def test_analyze_vod_returns_completed_analysis_even_at_cap() -> None:
+    from app.models.vod import AnalyzeVodRequest
+
+    analysis = _vod_analysis()
+    request = _vod_request(jobs={"other": _vod_job("other")})
 
     result = await _analyze(
-        request,
-        AnalyzeVodRequest(video="123456"),
-        VodClickHouse(analysis=_vod_analysis(status="failed"), stored=42),
-        service,
+        request, AnalyzeVodRequest(video="123456"), VodClickHouse(analysis=analysis), FakeVodService(), vod_max_concurrent_jobs=1
     )
 
-    assert result.job is not None
-    assert result.job.status == "queued"
-    assert "123456" in request.app.state.vod_tasks
-    await request.app.state.vod_tasks["123456"]
-    await asyncio.sleep(0)
-    assert service.calls == [("123456", True)]
-    assert request.app.state.vod_tasks == {}
+    assert result.analysis == analysis
+    assert result.job is None
 
 
 @pytest.mark.anyio
@@ -579,6 +631,10 @@ async def test_vod_activity_404_and_fail_soft() -> None:
         await routes.vod_activity(video_id="123456", bucket_seconds=None, clickhouse=VodClickHouse())
     assert exc.value.status_code == 404
 
+    with pytest.raises(HTTPException) as exc:
+        await routes.vod_activity(video_id="123456", bucket_seconds=None, clickhouse=VodClickHouse(fail=True))
+    assert exc.value.status_code == 503
+
     clickhouse = VodClickHouse(analysis=_vod_analysis(), fail_activity=True)
     result = await routes.vod_activity(video_id="123456", bucket_seconds=None, clickhouse=clickhouse)
     assert result.buckets == []
@@ -610,6 +666,14 @@ async def test_label_vod_returns_503_without_key_and_404_without_analysis() -> N
             service=VodLabelService(clickhouse=VodClickHouse(), api_key="key", model="m"),
         )
     assert exc.value.status_code == 404
+
+    class ValueErrorLabelService:
+        async def label(self, video_id):
+            raise ValueError("validation failed")
+
+    with pytest.raises(HTTPException) as exc:
+        await routes.label_vod(video_id="123456", service=ValueErrorLabelService())
+    assert exc.value.status_code == 500
 
 
 def test_prune_finished_jobs_with_custom_active_statuses() -> None:

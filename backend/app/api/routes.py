@@ -33,7 +33,14 @@ from app.models.vod import (
     VodAnalysisResponse,
 )
 from app.services.summaries import SummaryService
-from app.services.vod_analysis import VodAnalysisService, VodLabelService, vod_session_id
+from app.services.vod_analysis import (
+    CATCHUP_ERROR_PREFIX,
+    VodAnalysisService,
+    VodLabelService,
+    VodNoPeaksError,
+    VodNotFoundError,
+    vod_session_id,
+)
 from app.storage.clickhouse import ClickHouseRepository
 from app.storage.realtime import RealtimeHub
 from app.workers.audio_capture import AudioCaptureWorker
@@ -247,31 +254,35 @@ async def analyze_vod(
     jobs: dict[str, VodAnalysisJob] = request.app.state.vod_jobs
     tasks: dict[str, asyncio.Task] = request.app.state.vod_tasks
 
+    # All awaits happen up front; everything below until the job is registered is
+    # synchronous, so concurrent POSTs cannot interleave between the checks and insert.
+    existing_analysis: VodAnalysis | None = None
+    if not payload.force:
+        try:
+            existing_analysis = await clickhouse.get_vod_analysis(video_id)
+        except Exception:
+            logger.exception("Failed to load existing VOD analysis for %s", video_id)
+            existing_analysis = None
+
     existing_job = jobs.get(video_id)
     if existing_job is not None and existing_job.status in ACTIVE_VOD_STATUSES:
         return VodAnalysisResponse(job=existing_job)
+
+    if existing_analysis is not None and existing_analysis.status == "completed":
+        return VodAnalysisResponse(analysis=existing_analysis)
 
     active = sum(1 for job in jobs.values() if job.status in ACTIVE_VOD_STATUSES)
     if active >= settings.vod_max_concurrent_jobs:
         raise HTTPException(status_code=429, detail="Too many concurrent VOD analysis jobs")
 
-    session_id = vod_session_id(video_id)
-    if not payload.force:
-        try:
-            analysis = await clickhouse.get_vod_analysis(video_id)
-        except Exception:
-            logger.exception("Failed to load existing VOD analysis for %s", video_id)
-            analysis = None
-        if analysis is not None and analysis.status == "completed":
-            return VodAnalysisResponse(analysis=analysis)
-
-    skip_fetch = False
-    if not payload.force:
-        try:
-            skip_fetch = await clickhouse.vod_message_count(session_id) > 0
-        except Exception:
-            logger.exception("Failed to count stored VOD messages for %s", video_id)
-            skip_fetch = False
+    # Skip the fetch only when the previous run finished fetching and merely timed out
+    # waiting for the consumer; any other failure may have left truncated chat, so
+    # re-fetch (ReplacingMergeTree + uniqExact make republishing safe).
+    skip_fetch = (
+        existing_analysis is not None
+        and existing_analysis.status == "failed"
+        and existing_analysis.error.startswith(CATCHUP_ERROR_PREFIX)
+    )
 
     now = datetime.now(UTC)
     job = VodAnalysisJob(
@@ -332,9 +343,9 @@ async def vod_activity(
 ) -> VodActivity:
     try:
         analysis = await clickhouse.get_vod_analysis(video_id)
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to load VOD analysis %s from ClickHouse", video_id)
-        analysis = None
+        raise HTTPException(status_code=503, detail="VOD activity is temporarily unavailable") from exc
     if analysis is None:
         raise HTTPException(status_code=404, detail="VOD analysis not found")
 
@@ -366,7 +377,7 @@ async def label_vod(
 ) -> VodAnalysis:
     try:
         return await service.label(video_id)
-    except ValueError as exc:
+    except (VodNotFoundError, VodNoPeaksError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

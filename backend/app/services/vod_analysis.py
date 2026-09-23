@@ -39,6 +39,11 @@ BUCKET_CHOICES: tuple[int, ...] = (5, 10, 15, 30, 60, 120, 300)
 MAX_SAMPLE_MESSAGES = 20
 FLUSH_EVERY_PAGES = 50
 VOD_METRIC_SOURCE = "twitch_vod"
+# Error prefix of the only failure after which the full chat replay is known to be in
+# Kafka; a re-run may then skip the fetch (see routes.analyze_vod).
+CATCHUP_ERROR_PREFIX = "ClickHouse consumer did not catch up"
+# A stable stored count is accepted only when it is at least this share of the expected count.
+STABLE_ACCEPT_RATIO = 0.98
 
 STOPWORDS: frozenset[str] = frozenset(
     {
@@ -173,18 +178,19 @@ def detect_peaks(
     previous_end = 0
     for i in accepted:
         level = base[i] + 0.35 * (smoothed[i] - base[i])
-        start = i
-        steps = 0
-        while steps < max_extent and start - 1 >= 0 and start - 1 not in accepted_set and smoothed[start - 1] >= level:
+        # Always include the 3-bucket smoothing footprint i-1..i+1: at coarse buckets
+        # max_extent can be 0, and the smoothed maximum can sit one bucket off the raw
+        # burst. Accepted peaks are >= 2 apart, so the footprint never contains another.
+        start = max(i - 1, 0)
+        while i - start < max_extent and start - 1 >= 0 and start - 1 not in accepted_set and smoothed[start - 1] >= level:
             start -= 1
-            steps += 1
-        end = i + 1
-        steps = 0
-        while steps < max_extent and end < n and end not in accepted_set and smoothed[end] >= level:
+        end = min(i + 2, n)
+        while end - 1 - i < max_extent and end < n and end not in accepted_set and smoothed[end] >= level:
             end += 1
-            steps += 1
         start = max(start, previous_end)
         previous_end = end
+        # Candidate moves to the raw-count argmax of its extent (which contains the
+        # footprint), so peak_seconds points at the actual burst.
         window_counts = counts[start:end]
         peak_count = max(window_counts)
         index = start + list(window_counts).index(peak_count)
@@ -271,6 +277,19 @@ SleepFn = Callable[[float], Awaitable[Any]]
 class _VodFailure(Exception):
     """Expected pipeline failure with a user-facing message."""
 
+    def __init__(self, message: str, *, message_count: int = 0) -> None:
+        super().__init__(message)
+        # Stored on the failed analysis row (the fetched/expected count for catch-up failures).
+        self.message_count = message_count
+
+
+class VodNotFoundError(Exception):
+    """No completed VOD analysis exists for the requested video."""
+
+
+class VodNoPeaksError(Exception):
+    """The completed VOD analysis has no peaks to label."""
+
 
 def _default_normalize(node: dict, video: VodMetadata) -> ChatMessage | None:
     # TODO(integration): WS2 provides normalize_comment in app.ingestion.vod_replay.
@@ -325,6 +344,7 @@ class VodAnalysisService:
     async def run(self, video_id: str, *, skip_fetch: bool = False) -> None:
         """Run the whole pipeline for one VOD. Never raises (except on cancellation)."""
         video: VodMetadata | None = None
+        fetching = True
         try:
             self._update(video_id, status="fetching", detail="Loading VOD metadata", error="")
             async with self._gql_factory() as gql:
@@ -333,12 +353,14 @@ class VodAnalysisService:
                 except ValueError as exc:
                     raise _VodFailure("VOD not found or unavailable") from exc
                 self._update(video_id, duration_seconds=video.duration_seconds)
-                fetched = 0
-                if not skip_fetch:
-                    fetched = await self._fetch_and_publish(gql, video)
+                if skip_fetch:
+                    expected = await self._previous_expected_count(video_id)
+                else:
+                    expected = await self._fetch_and_publish(gql, video)
+            fetching = False
 
             session_id = vod_session_id(video_id)
-            stored = await self._wait_for_catchup(video_id, session_id, expected=None if skip_fetch else fetched)
+            stored = await self._wait_for_catchup(video_id, session_id, expected=expected)
 
             self._update(video_id, status="analyzing", detail="Detecting chat peaks")
             analysis = await self._analyze(video)
@@ -354,16 +376,44 @@ class VodAnalysisService:
             raise
         except _VodFailure as exc:
             logger.warning("VOD analysis for %s failed: %s", video_id, exc)
-            await self._fail(video_id, video, str(exc))
+            await self._fail(video_id, video, str(exc), message_count=exc.message_count)
         except Exception as exc:
-            # Full detail stays in server logs; the job and stored row get a sanitized error
-            # (same precedent as timed transcription jobs).
             logger.exception("VOD analysis for %s failed", video_id)
-            await self._fail(video_id, video, type(exc).__name__)
+            if fetching and isinstance(exc, RuntimeError):
+                # The GQL client raises RuntimeError with safe, user-meaningful text.
+                error = f"Twitch chat replay fetch failed: {str(exc)[:200]}"
+            else:
+                # Full detail stays in server logs; the job and stored row get a sanitized
+                # error (same precedent as timed transcription jobs).
+                error = type(exc).__name__
+            await self._fail(video_id, video, error)
 
-    async def _fail(self, video_id: str, video: VodMetadata | None, error: str) -> None:
+    async def _previous_expected_count(self, video_id: str) -> int | None:
+        """Expected row count for a skip-fetch re-run: the catch-up failure row's count."""
+        try:
+            previous = await self._clickhouse.get_vod_analysis(video_id)
+        except Exception:
+            logger.warning("Failed to load previous VOD analysis for %s", video_id, exc_info=True)
+            previous = None
+        if previous is not None and previous.message_count > 0:
+            return previous.message_count
+        return None
+
+    async def _completed_analysis_exists(self, video_id: str) -> bool:
+        try:
+            existing = await self._clickhouse.get_vod_analysis(video_id)
+        except Exception:
+            logger.warning("Failed to check existing VOD analysis for %s", video_id, exc_info=True)
+            return False
+        return existing is not None and existing.status == "completed"
+
+    async def _fail(self, video_id: str, video: VodMetadata | None, error: str, *, message_count: int = 0) -> None:
         self._update(video_id, status="failed", error=error, detail="Analysis failed")
         if video is None:
+            return
+        if await self._completed_analysis_exists(video_id):
+            # A failed (e.g. forced) re-run must not hide a good stored analysis; the
+            # failure is reported through the in-memory job only.
             return
         now = datetime.now(UTC)
         failed = VodAnalysis(
@@ -375,7 +425,7 @@ class VodAnalysisService:
             video_created_at=video.created_at,
             duration_seconds=video.duration_seconds,
             bucket_seconds=choose_bucket_seconds(video.duration_seconds, self._settings.vod_max_buckets),
-            message_count=0,
+            message_count=message_count,
             unique_chatter_count=0,
             status="failed",
             error=error,
@@ -427,6 +477,7 @@ class VodAnalysisService:
         settings = self._settings
         self._update(video_id, status="ingesting", detail="Waiting for ClickHouse consumer")
         if expected is None:
+            # Skip-fetch without a recorded expected count: whatever is stored is all we have.
             stored = await self._clickhouse.vod_message_count(session_id)
             self._update(video_id, stored_comments=stored)
             return stored
@@ -447,12 +498,16 @@ class VodAnalysisService:
             else:
                 stable = 0
             last = stored
-            if stable >= settings.vod_catchup_stable_polls:
-                # ReplacingMergeTree dedup (or dropped duplicates) can leave fewer rows than
-                # fetched comments; accept once the count stops moving.
+            if stable >= settings.vod_catchup_stable_polls and stored >= STABLE_ACCEPT_RATIO * expected:
+                # ReplacingMergeTree dedup (or dropped duplicates) can leave slightly fewer
+                # rows than fetched comments; accept a near-complete count once it stops
+                # moving. A count stalled well below that is a stuck consumer: keep waiting.
                 return stored
             if waited >= timeout or time.monotonic() - started >= timeout:
-                raise _VodFailure(f"ClickHouse consumer did not catch up (stored {stored} of {expected})")
+                raise _VodFailure(
+                    f"{CATCHUP_ERROR_PREFIX} (stored {stored} of {expected})",
+                    message_count=expected,
+                )
             await self._sleep(poll_seconds)
             waited += poll_seconds
 
@@ -597,9 +652,9 @@ class VodLabelService:
 
         analysis = await self._clickhouse.get_vod_analysis(video_id)
         if analysis is None or analysis.status != "completed":
-            raise ValueError("No completed analysis found for that VOD")
+            raise VodNotFoundError("No completed analysis found for that VOD")
         if not analysis.peaks:
-            raise ValueError("The analysis has no peaks to label")
+            raise VodNoPeaksError("The analysis has no peaks to label")
 
         text = await asyncio.to_thread(self._call_openai, analysis)
         titles = _parse_titles(text, {peak.peak_id for peak in analysis.peaks})
@@ -614,6 +669,12 @@ class VodLabelService:
         updated = analysis.model_copy(
             update={"peaks": peaks, "label_model": self._model, "updated_at": datetime.now(UTC)}
         )
+        # The OpenAI call can take a while; if the VOD was re-analyzed meanwhile, the
+        # titles belong to stale peaks, so keep the newer row untouched.
+        current = await self._clickhouse.get_vod_analysis(video_id)
+        if current is None or current.analyzed_at != analysis.analyzed_at:
+            logger.warning("VOD %s was re-analyzed while labeling; discarding peak titles", video_id)
+            return current if current is not None else analysis
         await self._clickhouse.upsert_vod_analysis(updated)
         return updated
 
