@@ -75,6 +75,13 @@ VOD_ANALYSES_DDL = """
 """
 
 
+def _to_unix_ms(value: datetime) -> int:
+    """UTC epoch milliseconds; naive datetimes are treated as UTC."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return int(round(value.timestamp() * 1000))
+
+
 def _fill_activity_buckets(
     rows: Iterable[Sequence[Any]],
     duration_seconds: int,
@@ -601,21 +608,22 @@ class ClickHouseRepository:
     ) -> list[VodActivityBucket]:
         if duration_seconds <= 0 or bucket_seconds <= 0:
             return []
-        created_at = self._as_utc(created_at)
         query = """
             SELECT
                 intDiv(toUnixTimestamp64Milli(event_ts) - %(created_ms)s, %(bucket_ms)s) AS bucket_index,
                 uniqExact(message_id) AS message_count,
                 uniqExact(chatter_user_id) AS unique_chatter_count
             FROM chat_messages
-            WHERE session_id = %(session_id)s AND source = 'vod' AND event_ts >= %(created_at)s
+            WHERE session_id = %(session_id)s AND source = 'vod'
+                AND toUnixTimestamp64Milli(event_ts) >= %(created_ms)s
             GROUP BY bucket_index
             ORDER BY bucket_index
         """
+        # Integer ms, not datetime params: clickhouse-connect renders datetimes at
+        # whole-second precision, which would let pre-start messages into bucket 0.
         params = {
             "session_id": session_id,
-            "created_at": created_at,
-            "created_ms": int(created_at.timestamp() * 1000),
+            "created_ms": _to_unix_ms(created_at),
             "bucket_ms": int(bucket_seconds) * 1000,
         }
         result = await self._query(query, params)
@@ -635,12 +643,13 @@ class ClickHouseRepository:
         for VOD chat in ``[window_start, window_end)``."""
         where = (
             "WHERE session_id = %(session_id)s AND source = 'vod' "
-            "AND event_ts >= %(window_start)s AND event_ts < %(window_end)s"
+            "AND toUnixTimestamp64Milli(event_ts) >= %(start_ms)s "
+            "AND toUnixTimestamp64Milli(event_ts) < %(end_ms)s"
         )
         params: dict[str, Any] = {
             "session_id": session_id,
-            "window_start": self._as_utc(window_start),
-            "window_end": self._as_utc(window_end),
+            "start_ms": _to_unix_ms(window_start),
+            "end_ms": _to_unix_ms(window_end),
         }
         stats_query = f"""
             SELECT uniqExact(message_id), uniqExact(chatter_user_id)
@@ -695,6 +704,7 @@ class ClickHouseRepository:
         return int(stats_row[0]), int(stats_row[1]), emotes, tokens, samples
 
     async def upsert_vod_analysis(self, analysis: VodAnalysis) -> None:
+        """Insert a full row; callers must bump ``updated_at`` on every write because ReplacingMergeTree dedups on it."""
         # ReplacingMergeTree(updated_at) keeps the newest row per video_id, so a
         # full-row insert is an upsert; updated_at comes from the model.
         row = self._vod_analysis_row(analysis)

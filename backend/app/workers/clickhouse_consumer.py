@@ -58,14 +58,11 @@ class ClickHouseConsumerWorker:
             database=settings.clickhouse_database,
         )
         # The init SQL never re-runs on existing volumes, and this worker inserts the
-        # `source` column, so migrate before consuming. Failure is logged, not fatal:
-        # inserts will then surface the real error and be retried without committing.
+        # `source` column, so every insert fails until the migration succeeds. Retry
+        # with backoff and exit (container restarts us) if it never succeeds.
         # TODO(integration): main.py's lifespan must also call ensure_vod_schema()
         # after ClickHouseRepository.connect() (owned by WS3).
-        try:
-            await self._repo.ensure_vod_schema()
-        except Exception:
-            logger.exception("Failed to ensure VOD ClickHouse schema; continuing")
+        await self._ensure_schema_with_retry()
         await self._start_consumer_with_retry()
         WORKER_KAFKA_CONNECTED.set(1)
         logger.info("ClickHouse consumer started")
@@ -96,6 +93,10 @@ class ClickHouseConsumerWorker:
                     or now - last_flush >= self._flush_interval_seconds
                 )
                 if should_flush:
+                    if retry_pending:
+                        # The previous insert failed; the schema may have been missing
+                        # (e.g. ClickHouse volume replaced), so re-apply it best effort.
+                        await self._ensure_schema_best_effort()
                     try:
                         await self._repo.insert_messages(batch)
                     except Exception:
@@ -137,6 +138,32 @@ class ClickHouseConsumerWorker:
 
     def stop(self) -> None:
         self._stop.set()
+
+    async def _ensure_schema_with_retry(self, attempts: int = 30, delay_seconds: float = 2.0) -> None:
+        if self._repo is None:
+            raise RuntimeError("ClickHouse repository is not connected")
+        for attempt in range(1, attempts + 1):
+            try:
+                await self._repo.ensure_vod_schema()
+                return
+            except Exception:
+                if attempt == attempts:
+                    raise
+                logger.warning(
+                    "Failed to ensure VOD ClickHouse schema; retrying (%s/%s)",
+                    attempt,
+                    attempts,
+                    exc_info=True,
+                )
+                await asyncio.sleep(delay_seconds)
+
+    async def _ensure_schema_best_effort(self) -> None:
+        if self._repo is None:
+            return
+        try:
+            await self._repo.ensure_vod_schema()
+        except Exception:
+            logger.exception("Failed to re-apply VOD ClickHouse schema before insert retry")
 
     async def _start_consumer_with_retry(self, attempts: int = 30, delay_seconds: float = 2.0) -> None:
         for attempt in range(1, attempts + 1):

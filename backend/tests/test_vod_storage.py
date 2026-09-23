@@ -262,6 +262,12 @@ def test_fill_activity_buckets_zero_fills_gaps_and_drops_out_of_range() -> None:
     assert [bucket.unique_chatter_count for bucket in buckets] == [2, 0, 4, 0, 1]
 
 
+def test_fill_activity_buckets_drops_negative_indices() -> None:
+    buckets = _fill_activity_buckets([(-2, 9, 9), (-1, 8, 8)], duration_seconds=20, bucket_seconds=10)
+
+    assert [(b.index, b.message_count) for b in buckets] == [(0, 0), (1, 0)]
+
+
 def test_fill_activity_buckets_handles_empty_and_invalid_inputs() -> None:
     assert _fill_activity_buckets([], duration_seconds=0, bucket_seconds=10) == []
     assert _fill_activity_buckets([], duration_seconds=30, bucket_seconds=0) == []
@@ -272,7 +278,7 @@ def test_fill_activity_buckets_handles_empty_and_invalid_inputs() -> None:
 async def test_vod_activity_queries_vod_source_and_fills() -> None:
     client = FakeClickHouseClient(query_results=[[(1, 7, 3)]])
     repo = _repo(client)
-    created_at = datetime(2026, 4, 28, 12, tzinfo=UTC)
+    created_at = datetime(2026, 4, 28, 12, 0, 0, 250_000, tzinfo=UTC)
 
     buckets = await repo.vod_activity(
         session_id="vod:123", created_at=created_at, duration_seconds=30, bucket_seconds=10
@@ -281,9 +287,10 @@ async def test_vod_activity_queries_vod_source_and_fills() -> None:
     assert [b.message_count for b in buckets] == [0, 7, 0]
     query, params = client.queries[0]
     assert "source = 'vod'" in query
-    assert params["created_ms"] == int(created_at.timestamp() * 1000)
-    assert params["bucket_ms"] == 10_000
-    assert params["session_id"] == "vod:123"
+    assert "toUnixTimestamp64Milli(event_ts) >= %(created_ms)s" in query
+    # Integer-ms params only: no datetime params (clickhouse-connect truncates them to seconds).
+    assert params == {"session_id": "vod:123", "created_ms": 1777377600250, "bucket_ms": 10_000}
+    assert all(isinstance(value, (str, int)) for value in params.values())
 
 
 @pytest.mark.anyio
@@ -300,9 +307,15 @@ async def test_vod_peak_context_shapes_results() -> None:
 
     count, unique, emotes, tokens, samples = await repo.vod_peak_context(
         session_id="vod:123",
-        window_start=datetime(2026, 4, 28, 12, tzinfo=UTC),
+        window_start=datetime(2026, 4, 28, 12, 0, 0, 500_000, tzinfo=UTC),
         window_end=datetime(2026, 4, 28, 12, 1, tzinfo=UTC),
     )
+    for query, params in client.queries:
+        assert "toUnixTimestamp64Milli(event_ts) >= %(start_ms)s" in query
+        assert "toUnixTimestamp64Milli(event_ts) < %(end_ms)s" in query
+        assert params["start_ms"] == 1777377600500
+        assert params["end_ms"] == 1777377660000
+        assert not any(isinstance(value, datetime) for value in params.values())
 
     assert (count, unique) == (12, 9)
     assert emotes == [TopItem(value="KEKW", count=4)]
@@ -336,7 +349,8 @@ async def test_ensure_vod_schema_migrates_old_table() -> None:
 
     commands = [cmd for cmd, _kwargs in client.commands]
     assert any("ADD COLUMN IF NOT EXISTS source" in cmd for cmd in commands)
-    assert any("MODIFY TTL toDateTime(received_at)" in cmd for cmd in commands)
+    ttl_calls = [kwargs for cmd, kwargs in client.commands if "MODIFY TTL toDateTime(received_at)" in cmd]
+    assert ttl_calls == [{"settings": {"materialize_ttl_after_modify": 0}}]
     assert any("CREATE TABLE IF NOT EXISTS vod_analyses" in cmd for cmd in commands)
 
 
