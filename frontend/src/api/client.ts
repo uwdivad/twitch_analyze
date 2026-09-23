@@ -17,7 +17,7 @@ export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 // the dashboard reload loop indefinitely.
 const REQUEST_TIMEOUT_MS = 15_000;
 
-async function getJson<T>(path: string): Promise<T> {
+export async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   });
@@ -27,7 +27,7 @@ async function getJson<T>(path: string): Promise<T> {
   return response.json();
 }
 
-async function postJson<T>(path: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+export async function postJson<T>(path: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: {
