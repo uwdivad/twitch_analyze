@@ -47,6 +47,21 @@ class Settings(BaseSettings):
     audio_retention_minutes: int = Field(default=60, ge=1, le=1440)
     audio_chunk_dir: str = "/tmp/twitch-audio"
 
+    twitch_gql_url: str = "https://gql.twitch.tv/gql"
+    twitch_gql_client_id: str = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+    twitch_gql_comments_query_hash: str = "b70a3591ff0f4e0313d126c6a1502d79a1c02baebb288227c582044aa76adf6a"
+    vod_max_concurrent_jobs: int = Field(default=2, ge=1, le=10)
+    vod_fetch_page_delay_seconds: float = 0.1
+    vod_fetch_max_retries: int = 5
+    vod_max_comments: int = 500_000
+    vod_max_buckets: int = 720
+    vod_max_peaks: int = Field(default=12, ge=1, le=50)
+    vod_catchup_timeout_seconds: float = 900.0
+    vod_catchup_poll_seconds: float = 2.0
+    vod_catchup_stable_polls: int = 5
+    # Empty falls back to openai_summary_model.
+    openai_vod_label_model: str = ""
+
     @property
     def channel_logins(self) -> list[str]:
         return [part.strip().lower() for part in self.twitch_channels.split(",") if part.strip()]

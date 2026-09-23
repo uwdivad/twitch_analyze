@@ -1,0 +1,75 @@
+/* Design tokens. Dark theme is the default; light overrides apply via
+   <html data-theme="light">. Values are provisional (finalized by the UI overhaul). */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0d0d0d;
+  --surface: #141416;
+  --surface-raised: #1a1a1d;
+  --card: rgba(255, 255, 255, 0.03);
+  --card-hover: rgba(255, 255, 255, 0.05);
+  --input: rgba(255, 255, 255, 0.06);
+  --input-hover: rgba(255, 255, 255, 0.09);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --fg: #fff;
+  --fg-muted: rgba(255, 255, 255, 0.55);
+  --fg-dim: rgba(255, 255, 255, 0.44);
+
+  --accent: #9146ff;
+  --accent-hover: #772ce8;
+  --accent-soft: rgba(145, 70, 255, 0.14);
+  --accent-text: #bf94ff;
+  --live: #00f593;
+  --danger: #ff5c5c;
+  --danger-bg: rgba(255, 92, 92, 0.12);
+  --warning: #ffb454;
+
+  --radius-xs: 8px;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-full: 9999px;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.5);
+
+  --font-display: "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", Menlo, monospace;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f4f4f6;
+  --surface: #fff;
+  --surface-raised: #fff;
+  --card: #fff;
+  --card-hover: #f7f7f9;
+  --input: rgba(0, 0, 0, 0.04);
+  --input-hover: rgba(0, 0, 0, 0.07);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --fg: #0d0d0d;
+  --fg-muted: rgba(0, 0, 0, 0.55);
+  --fg-dim: rgba(0, 0, 0, 0.44);
+
+  --accent-text: #6b2fd6;
+  --danger: #d93025;
+  --danger-bg: rgba(217, 48, 37, 0.08);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.1);
+}

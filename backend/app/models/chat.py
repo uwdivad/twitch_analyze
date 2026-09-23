@@ -36,6 +36,7 @@ class ChatMessage(BaseModel):
     raw_event: dict[str, Any] = Field(default_factory=dict)
     event_ts: datetime
     received_at: datetime = Field(default_factory=utc_now)
+    source: str = "live"
 
 
 class LiveEnvelope(BaseModel):

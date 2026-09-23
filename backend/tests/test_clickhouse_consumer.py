@@ -26,6 +26,8 @@ def test_chat_message_from_record_parses_valid_payload() -> None:
     assert message is not None
     assert message.message_id == "message-1"
     assert message.message_text == "hello"
+    # Payloads produced before the `source` field existed default to live chat.
+    assert message.source == "live"
 
 
 def test_chat_message_from_record_skips_invalid_payload() -> None:
