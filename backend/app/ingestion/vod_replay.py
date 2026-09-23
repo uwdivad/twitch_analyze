@@ -382,7 +382,8 @@ class TwitchGqlClient:
                 lowered = [error.lower() for error in errors]
                 if any(INTEGRITY_CHECK_ERROR in error for error in lowered):
                     raise RuntimeError(
-                        "Twitch rejected the request (integrity check); the web Client-Id/hash may need updating"
+                        "Twitch rejected the request (integrity check); the web Client-Id/hash may need updating "
+                        "(TWITCH_GQL_CLIENT_ID / TWITCH_GQL_COMMENTS_QUERY_HASH)"
                     )
                 if not any(marker in error for error in lowered for marker in TRANSIENT_GQL_ERRORS):
                     raise RuntimeError(f"Twitch GQL errors: {'; '.join(errors)}")

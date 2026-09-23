@@ -48,7 +48,10 @@ class Settings(BaseSettings):
     audio_chunk_dir: str = "/tmp/twitch-audio"
 
     twitch_gql_url: str = "https://gql.twitch.tv/gql"
-    twitch_gql_client_id: str = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+    # Not the browser web client id (kimne78...): Twitch rejects cursor-paged chat
+    # replay requests from that id with "failed integrity check". This public id is
+    # the one TwitchDownloader uses for chat replay and pages by cursor without it.
+    twitch_gql_client_id: str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"
     twitch_gql_comments_query_hash: str = "b70a3591ff0f4e0313d126c6a1502d79a1c02baebb288227c582044aa76adf6a"
     vod_max_concurrent_jobs: int = Field(default=2, ge=1, le=10)
     vod_fetch_page_delay_seconds: float = 0.1
