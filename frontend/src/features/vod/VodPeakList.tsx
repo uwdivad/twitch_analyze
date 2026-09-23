@@ -33,7 +33,7 @@ export function VodPeakList({ peaks, currentTime, onSeek }: VodPeakListProps) {
               onClick={() => onSeek(peak.start_seconds)}
               title={peak.sample_messages.length > 0 ? peak.sample_messages.slice(0, 3).join('\n') : undefined}
             >
-              <span className="vod-peak-time vod-mono">{formatOffset(peak.peak_seconds)}</span>
+              <span className="vod-peak-time vod-mono">{formatOffset(peak.start_seconds)}</span>
               <span className="vod-peak-body">
                 <span className="vod-peak-title">{peak.title || peak.label || `Peak ${peak.peak_id}`}</span>
                 {keywords ? <span className="vod-peak-keywords muted">{keywords}</span> : null}

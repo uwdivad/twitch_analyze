@@ -447,6 +447,9 @@
   flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
+  /* The shared .stat primitive pads for full-width metric rows; inside the
+     narrow side card that padding squeezed values until "6,673" wrapped. */
+  padding: 0;
 }
 
 .vod-stat-label {
@@ -464,7 +467,7 @@
   font-size: 18px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .vod-side-field {
@@ -568,6 +571,17 @@
 @media (max-width: 480px) {
   .vod-stats {
     grid-template-columns: 1fr 1fr;
+  }
+
+  /* Give peak titles the room on phones: tighter time column, and drop the
+     secondary msg/s column (the activity bar still shows relative intensity). */
+  .vod-peak-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+
+  .vod-peak-rate {
+    display: none;
   }
 }
 
