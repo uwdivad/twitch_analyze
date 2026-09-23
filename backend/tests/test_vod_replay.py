@@ -1,6 +1,9 @@
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import aiohttp
 import pytest
 
 from app.ingestion import vod_replay
@@ -61,8 +64,16 @@ def make_client(fetch_json: Any, **kwargs: Any) -> TwitchGqlClient:
     )
 
 
-def comments_response(node_ids: list[str], has_next: bool) -> list[dict[str, Any]]:
-    edges = [{"cursor": f"cur-{node_id}", "node": make_node(node_id)} for node_id in node_ids]
+def comments_response(
+    node_ids: list[str], has_next: bool, offsets: list[Any] | None = None
+) -> list[dict[str, Any]]:
+    # Default: offsets increase with the id's order in the alphabet, so paging makes progress.
+    if offsets is None:
+        offsets = [ord(node_id[0]) for node_id in node_ids]
+    edges = [
+        {"cursor": f"cur-{node_id}", "node": make_node(node_id, offset=offset)}
+        for node_id, offset in zip(node_ids, offsets, strict=True)
+    ]
     return [
         {
             "data": {
@@ -82,7 +93,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     async def fake_sleep(delay: float) -> None:
         delays.append(delay)
 
-    monkeypatch.setattr(vod_replay.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(vod_replay, "_sleep", fake_sleep)
     return delays
 
 
@@ -367,3 +378,181 @@ async def test_fetch_video_posts_raw_query_and_null_video_raises() -> None:
     assert calls[0]["variables"] == {"id": "987"}
     assert "video(id: $id)" in calls[0]["query"]
     assert "lengthSeconds" in calls[0]["query"]
+
+
+def test_normalize_comment_non_finite_offset() -> None:
+    assert normalize_comment(make_node(offset=float("nan")), make_video()) is None
+    assert normalize_comment(make_node(offset=float("inf")), make_video()) is None
+
+
+def test_normalize_comment_emote_position_after_emoji_and_id_fallback() -> None:
+    node = make_node()
+    node["message"]["fragments"] = [
+        {"text": "\U0001F602 wow ", "emote": None},
+        {"text": "Kappa", "emote": {"id": "25;7"}},
+        {"text": " lol", "emote": None},
+    ]
+    message = normalize_comment(node, make_video())
+    assert message is not None
+    assert len(message.emotes) == 1
+    emote = message.emotes[0]
+    start, end = emote["position"]["start"], emote["position"]["end"]
+    assert message.message_text[start : end + 1] == "Kappa"
+    assert emote["emote"] == {"id": "25"}
+    assert message.message_fragments[1] == {"type": "emote", "text": "Kappa", "emote": {"id": "25"}}
+
+
+@pytest.mark.anyio
+async def test_iter_comment_pages_stops_when_offset_stalls(no_sleep: list[float]) -> None:
+    calls: list[Any] = []
+    responses = [
+        comments_response(["a1"], has_next=True, offsets=[10]),
+        comments_response(["a2"], has_next=True, offsets=[10]),
+        comments_response(["a3"], has_next=True, offsets=[9]),
+        comments_response(["a4"], has_next=True, offsets=[10]),
+        comments_response(["never"], has_next=False, offsets=[11]),
+    ]
+
+    async def fetch_json(body: Any) -> Any:
+        calls.append(body)
+        return responses[len(calls) - 1]
+
+    async with make_client(fetch_json) as client:
+        pages = [page async for page in client.iter_comment_pages("1")]
+
+    # New ids keep arriving, but offsets never pass 10: stop after 3 stalled pages.
+    assert [[node["id"] for node in page] for page in pages] == [["a1"], ["a2"], ["a3"], ["a4"]]
+    assert len(calls) == 4
+
+
+class _FakeResponse:
+    def __init__(self, status: int, body: str) -> None:
+        self.status = status
+        self._body = body
+
+    async def __aenter__(self) -> "_FakeResponse":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+    async def text(self) -> str:
+        return self._body
+
+    async def json(self, content_type: Any = None) -> Any:
+        return json.loads(self._body)
+
+
+class _FakeSession:
+    def __init__(self, responses: list[_FakeResponse]) -> None:
+        self.responses = responses
+        self.posts: list[Any] = []
+
+    def post(self, url: str, json: Any) -> _FakeResponse:
+        self.posts.append(json)
+        return self.responses[len(self.posts) - 1]
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.mark.anyio
+async def test_invalid_json_on_200_is_retried(no_sleep: list[float]) -> None:
+    video_body = {
+        "data": {
+            "video": {
+                "id": "987",
+                "title": "T",
+                "lengthSeconds": 10,
+                "createdAt": "2024-01-01T00:00:00Z",
+                "owner": {"id": "42", "login": "s", "displayName": "S"},
+            }
+        }
+    }
+    session = _FakeSession([_FakeResponse(200, "<html>oops</html>"), _FakeResponse(200, json.dumps(video_body))])
+    client = TwitchGqlClient(url="https://gql.example/gql", client_id="cid", comments_query_hash=HASH)
+    client._session = session  # type: ignore[assignment]
+
+    video = await client.fetch_video("987")
+
+    assert video.video_id == "987"
+    assert len(session.posts) == 2
+    assert no_sleep == [1]
+
+
+@pytest.mark.anyio
+async def test_invalid_json_exhausts_retries_as_runtime_error(no_sleep: list[float]) -> None:
+    session = _FakeSession([_FakeResponse(200, "not json") for _ in range(3)])
+    client = TwitchGqlClient(url="u", client_id="cid", comments_query_hash=HASH, max_retries=2)
+    client._session = session  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="Twitch GQL request failed: 502 invalid JSON"):
+        await client.fetch_video("987")
+    assert len(session.posts) == 3
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("message", ["service timeout", "Service Error", "service unavailable"])
+async def test_transient_gql_error_is_retried(no_sleep: list[float], message: str) -> None:
+    attempts = 0
+
+    async def fetch_json(body: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return [{"errors": [{"message": message}]}]
+        return comments_response(["a"], has_next=False)
+
+    async with make_client(fetch_json) as client:
+        pages = [page async for page in client.iter_comment_pages("1")]
+
+    assert attempts == 2
+    assert [[node["id"] for node in page] for page in pages] == [["a"]]
+    assert no_sleep == [1]
+
+
+@pytest.mark.anyio
+async def test_transient_gql_error_exhausts_retries(no_sleep: list[float]) -> None:
+    async def fetch_json(body: Any) -> Any:
+        return {"errors": [{"message": "service timeout"}]}
+
+    async with make_client(fetch_json, max_retries=1) as client:
+        with pytest.raises(RuntimeError, match="Twitch GQL request failed: gql service timeout"):
+            await client.fetch_video("1")
+    assert no_sleep == [1]
+
+
+@pytest.mark.anyio
+async def test_integrity_check_error_is_fatal(no_sleep: list[float]) -> None:
+    attempts = 0
+
+    async def fetch_json(body: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        return [{"errors": [{"message": "failed integrity check"}]}]
+
+    async with make_client(fetch_json) as client:
+        with pytest.raises(RuntimeError, match=r"integrity check\); the web Client-Id/hash may need updating"):
+            await client.fetch_video("1")
+    assert attempts == 1
+    assert no_sleep == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("error", [aiohttp.ClientConnectionError("reset"), asyncio.TimeoutError()])
+async def test_transport_errors_are_retried(no_sleep: list[float], error: Exception) -> None:
+    attempts = 0
+
+    async def fetch_json(body: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise error
+        return comments_response(["a"], has_next=False)
+
+    async with make_client(fetch_json) as client:
+        pages = [page async for page in client.iter_comment_pages("1")]
+
+    assert attempts == 2
+    assert [[node["id"] for node in page] for page in pages] == [["a"]]
+    assert no_sleep == [1]

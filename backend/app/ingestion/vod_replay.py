@@ -8,7 +8,9 @@ that depends on the GQL shape stays in this module.
 """
 
 import asyncio
+import json
 import logging
+import math
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -41,6 +43,15 @@ VIDEO_QUERY = (
 )
 PERSISTED_QUERY_NOT_FOUND = "PersistedQueryNotFound"
 MAX_BACKOFF_SECONDS = 30
+REQUEST_TIMEOUT_SECONDS = 30
+# Consecutive pages whose max contentOffsetSeconds does not advance before paging gives up.
+MAX_STALLED_PAGES = 3
+# GQL-level errors Twitch returns with HTTP 200 that are worth retrying (lowercase substrings).
+TRANSIENT_GQL_ERRORS = ("service timeout", "service error", "service unavailable")
+INTEGRITY_CHECK_ERROR = "failed integrity check"
+
+# Indirection so tests can patch sleeps in this module without touching asyncio globally.
+_sleep = asyncio.sleep
 
 _BARE_ID_RE = re.compile(r"^v?(\d{1,20})$", re.IGNORECASE)
 _VIDEOS_PATH_RE = re.compile(r"^/videos/(\d{1,20})/?$")
@@ -116,6 +127,8 @@ def normalize_comment(node: dict[str, Any], video: VodMetadata) -> ChatMessage |
         offset_seconds = float(offset)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(offset_seconds):
+        return None
 
     commenter = node.get("commenter")
     if commenter:
@@ -135,7 +148,8 @@ def normalize_comment(node: dict[str, Any], video: VodMetadata) -> ChatMessage |
         text_parts.append(text)
         emote = fragment.get("emote")
         if emote:
-            emote_id = str(emote.get("emoteID") or emote.get("id") or "")
+            # Fragment ``id`` is "<emoteID>;<position>"; prefer ``emoteID``.
+            emote_id = str(emote.get("emoteID") or str(emote.get("id") or "").split(";")[0])
             fragments.append({"type": "emote", "text": text, "emote": {"id": emote_id}})
             # Same shape as irc.parse_emotes; position is inclusive char range in message_text.
             emotes.append(
@@ -196,6 +210,21 @@ def _gql_error_messages(response: Any) -> list[str]:
     return messages
 
 
+def _max_offset(edges: list[Any]) -> float | None:
+    best: float | None = None
+    for edge in edges:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        if not isinstance(node, dict):
+            continue
+        try:
+            offset = float(node.get("contentOffsetSeconds"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(offset) and (best is None or offset > best):
+            best = offset
+    return best
+
+
 class TwitchGqlClient:
     """Async client for Twitch's web GQL API, scoped to VOD metadata and chat replay."""
 
@@ -220,7 +249,8 @@ class TwitchGqlClient:
     async def __aenter__(self) -> "TwitchGqlClient":
         if self._injected_fetch is None and self._session is None:
             self._session = aiohttp.ClientSession(
-                headers={"Client-Id": self.client_id, "Content-Type": "application/json"}
+                headers={"Client-Id": self.client_id, "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
             )
         return self
 
@@ -252,10 +282,12 @@ class TwitchGqlClient:
         variables: dict[str, Any] = {"videoID": video_id, "contentOffsetSeconds": 0}
         previous_ids: set[str] = set()
         empty_streak = 0
+        stalled_pages = 0
+        best_offset: float | None = None
         first = True
         while True:
             if not first and self.page_delay_seconds > 0:
-                await asyncio.sleep(self.page_delay_seconds)
+                await _sleep(self.page_delay_seconds)
             first = False
 
             response = await self._post([self._comments_body(variables)])
@@ -282,6 +314,13 @@ class TwitchGqlClient:
                 new_nodes.append(node)
             previous_ids = page_ids
 
+            page_max_offset = _max_offset(edges)
+            if page_max_offset is not None and (best_offset is None or page_max_offset > best_offset):
+                best_offset = page_max_offset
+                stalled_pages = 0
+            else:
+                stalled_pages += 1
+
             if new_nodes:
                 empty_streak = 0
                 yield new_nodes
@@ -290,6 +329,14 @@ class TwitchGqlClient:
                 if empty_streak >= 2:
                     logger.warning("VOD %s: two pages with no new comments; stopping", video_id)
                     return
+            if stalled_pages >= MAX_STALLED_PAGES:
+                logger.warning(
+                    "VOD %s: comment offset stuck at %s for %s pages; stopping",
+                    video_id,
+                    best_offset,
+                    stalled_pages,
+                )
+                return
 
             has_next = bool((comments.get("pageInfo") or {}).get("hasNextPage"))
             cursor = next(
@@ -328,9 +375,17 @@ class TwitchGqlClient:
                     raise RuntimeError(
                         "Twitch GQL persisted query not found; set TWITCH_GQL_COMMENTS_QUERY_HASH"
                     )
-                if errors:
+                if not errors:
+                    return response
+                lowered = [error.lower() for error in errors]
+                if any(INTEGRITY_CHECK_ERROR in error for error in lowered):
+                    raise RuntimeError(
+                        "Twitch rejected the request (integrity check); the web Client-Id/hash may need updating"
+                    )
+                if not any(marker in error for error in lowered for marker in TRANSIENT_GQL_ERRORS):
                     raise RuntimeError(f"Twitch GQL errors: {'; '.join(errors)}")
-                return response
+                # Transient server-side GQL error on HTTP 200: retry like a 5xx.
+                status, text = "gql", "; ".join(errors)
 
             if attempt >= self.max_retries:
                 raise RuntimeError(f"Twitch GQL request failed: {status} {text}")
@@ -339,7 +394,7 @@ class TwitchGqlClient:
             logger.warning(
                 "Twitch GQL request failed (%s); retry %s/%s in %ss", status, attempt, self.max_retries, delay
             )
-            await asyncio.sleep(delay)
+            await _sleep(delay)
 
     async def _fetch_json(self, body: list[Any] | dict[str, Any]) -> Any:
         if self._injected_fetch is not None:
@@ -349,4 +404,8 @@ class TwitchGqlClient:
         async with self._session.post(self.url, json=body) as response:
             if response.status >= 400:
                 raise GqlHttpError(response.status, await response.text())
-            return await response.json(content_type=None)
+            try:
+                return await response.json(content_type=None)
+            except (json.JSONDecodeError, UnicodeDecodeError, aiohttp.ContentTypeError) as exc:
+                # Retryable transport failure; must never escape as ValueError ("VOD not found").
+                raise GqlHttpError(502, f"invalid JSON: {exc}") from exc
