@@ -1,8 +1,11 @@
 import asyncio
 import logging
+import math
 import secrets
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -21,7 +24,23 @@ from app.models.chat import (
     TranscriptionJob,
     VolumePoint,
 )
+from app.models.vod import (
+    ACTIVE_VOD_STATUSES,
+    AnalyzeVodRequest,
+    VodActivity,
+    VodAnalysis,
+    VodAnalysisJob,
+    VodAnalysisResponse,
+)
 from app.services.summaries import SummaryService
+from app.services.vod_analysis import (
+    CATCHUP_ERROR_PREFIX,
+    VodAnalysisService,
+    VodLabelService,
+    VodNoPeaksError,
+    VodNotFoundError,
+    vod_session_id,
+)
 from app.storage.clickhouse import ClickHouseRepository
 from app.storage.realtime import RealtimeHub
 from app.workers.audio_capture import AudioCaptureWorker
@@ -33,6 +52,10 @@ logger = logging.getLogger(__name__)
 MAX_MESSAGE_BATCH_SIZE = 500
 # Maximum number of finished (non-running) transcription jobs kept in memory.
 MAX_FINISHED_TRANSCRIPTION_JOBS = 50
+# Maximum number of finished VOD analysis jobs kept in memory.
+MAX_FINISHED_VOD_JOBS = 50
+# Upper bound on buckets returned by the VOD activity endpoint when a caller picks a small bucket.
+MAX_VOD_ACTIVITY_BUCKETS = 3600
 
 
 def require_api_key(
@@ -49,11 +72,12 @@ def require_api_key(
 
 
 def _prune_finished_jobs(
-    jobs: dict[str, TranscriptionJob],
+    jobs: dict[str, TranscriptionJob] | dict[str, VodAnalysisJob],
     max_finished: int = MAX_FINISHED_TRANSCRIPTION_JOBS,
+    active_statuses: frozenset[str] = frozenset({"running"}),
 ) -> None:
     """Keep at most `max_finished` finished jobs, evicting the oldest first."""
-    finished = [job_id for job_id, job in jobs.items() if job.status != "running"]
+    finished = [job_id for job_id, job in jobs.items() if job.status not in active_statuses]
     excess = len(finished) - max_finished
     if excess <= 0:
         return
@@ -78,6 +102,62 @@ def get_summary_service(
         api_key=settings.openai_api_key,
         model=settings.openai_summary_model,
         max_messages=settings.openai_summary_max_messages,
+        timeout_seconds=settings.openai_timeout_seconds,
+    )
+
+
+def _default_parse_vod_reference(value: str) -> str:
+    # TODO(integration): WS2 provides parse_vod_reference in app.ingestion.vod_replay.
+    from app.ingestion.vod_replay import parse_vod_reference
+
+    return parse_vod_reference(value)
+
+
+def get_vod_reference_parser() -> Callable[[str], str]:
+    return _default_parse_vod_reference
+
+
+def _gql_client_factory(settings: Settings) -> Callable[[], Any]:
+    def factory() -> Any:
+        # TODO(integration): wire real TwitchGqlClient factory + app.state.kafka.
+        # Imported lazily because WS2's module is not on this branch yet.
+        from app.ingestion.vod_replay import TwitchGqlClient
+
+        return TwitchGqlClient(
+            url=settings.twitch_gql_url,
+            client_id=settings.twitch_gql_client_id,
+            comments_query_hash=settings.twitch_gql_comments_query_hash,
+            max_retries=settings.vod_fetch_max_retries,
+            page_delay_seconds=settings.vod_fetch_page_delay_seconds,
+        )
+
+    return factory
+
+
+def get_vod_service(
+    request: Request,
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+    settings: Settings = Depends(get_settings),
+) -> VodAnalysisService:
+    # TODO(integration): wire real TwitchGqlClient factory + app.state.kafka
+    # (app.state.kafka must expose flush(), added by WS1).
+    return VodAnalysisService(
+        clickhouse=clickhouse,
+        kafka=request.app.state.kafka,
+        gql_factory=_gql_client_factory(settings),
+        settings=settings,
+        jobs=request.app.state.vod_jobs,
+    )
+
+
+def get_vod_label_service(
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+    settings: Settings = Depends(get_settings),
+) -> VodLabelService:
+    return VodLabelService(
+        clickhouse=clickhouse,
+        api_key=settings.openai_api_key,
+        model=settings.openai_vod_label_model or settings.openai_summary_model,
         timeout_seconds=settings.openai_timeout_seconds,
     )
 
@@ -149,6 +229,161 @@ async def transcription_job(request: Request, job_id: str) -> TranscriptionJob:
     if job is None:
         raise HTTPException(status_code=404, detail="Transcription job not found")
     return job
+
+
+# NOTE: /api/vods/analyze must be declared before /api/vods/{video_id} routes.
+@router.post(
+    "/api/vods/analyze",
+    response_model=VodAnalysisResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_key)],
+)
+async def analyze_vod(
+    request: Request,
+    payload: AnalyzeVodRequest,
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+    settings: Settings = Depends(get_settings),
+    service: VodAnalysisService = Depends(get_vod_service),
+    parse_reference: Callable[[str], str] = Depends(get_vod_reference_parser),
+) -> VodAnalysisResponse:
+    try:
+        video_id = parse_reference(payload.video)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Twitch VOD URL or video id") from exc
+
+    jobs: dict[str, VodAnalysisJob] = request.app.state.vod_jobs
+    tasks: dict[str, asyncio.Task] = request.app.state.vod_tasks
+
+    # All awaits happen up front; everything below until the job is registered is
+    # synchronous, so concurrent POSTs cannot interleave between the checks and insert.
+    existing_analysis: VodAnalysis | None = None
+    if not payload.force:
+        try:
+            existing_analysis = await clickhouse.get_vod_analysis(video_id)
+        except Exception:
+            logger.exception("Failed to load existing VOD analysis for %s", video_id)
+            existing_analysis = None
+
+    existing_job = jobs.get(video_id)
+    if existing_job is not None and existing_job.status in ACTIVE_VOD_STATUSES:
+        return VodAnalysisResponse(job=existing_job)
+
+    if existing_analysis is not None and existing_analysis.status == "completed":
+        return VodAnalysisResponse(analysis=existing_analysis)
+
+    active = sum(1 for job in jobs.values() if job.status in ACTIVE_VOD_STATUSES)
+    if active >= settings.vod_max_concurrent_jobs:
+        raise HTTPException(status_code=429, detail="Too many concurrent VOD analysis jobs")
+
+    # Skip the fetch only when the previous run finished fetching and merely timed out
+    # waiting for the consumer; any other failure may have left truncated chat, so
+    # re-fetch (ReplacingMergeTree + uniqExact make republishing safe).
+    skip_fetch = (
+        existing_analysis is not None
+        and existing_analysis.status == "failed"
+        and existing_analysis.error.startswith(CATCHUP_ERROR_PREFIX)
+    )
+
+    now = datetime.now(UTC)
+    job = VodAnalysisJob(
+        video_id=video_id,
+        status="queued",
+        started_at=now,
+        updated_at=now,
+        detail="Using stored chat replay" if skip_fetch else "Queued",
+    )
+    jobs[video_id] = job
+
+    task = asyncio.create_task(service.run(video_id, skip_fetch=skip_fetch))
+    tasks[video_id] = task
+
+    def _on_done(finished: asyncio.Task) -> None:
+        if tasks.get(video_id) is finished:
+            tasks.pop(video_id, None)
+        _prune_finished_jobs(jobs, MAX_FINISHED_VOD_JOBS, active_statuses=ACTIVE_VOD_STATUSES)
+
+    task.add_done_callback(_on_done)
+    return VodAnalysisResponse(job=job)
+
+
+@router.get("/api/vods", response_model=list[VodAnalysis])
+async def vod_analyses(
+    limit: int = Query(default=20, ge=1, le=100),
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+) -> list[VodAnalysis]:
+    try:
+        return await clickhouse.recent_vod_analyses(limit=limit)
+    except Exception:
+        logger.exception("Failed to load VOD analyses from ClickHouse")
+        return []
+
+
+@router.get("/api/vods/{video_id}", response_model=VodAnalysisResponse)
+async def vod_analysis(
+    request: Request,
+    video_id: str,
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+) -> VodAnalysisResponse:
+    job = request.app.state.vod_jobs.get(video_id)
+    try:
+        analysis = await clickhouse.get_vod_analysis(video_id)
+    except Exception:
+        logger.exception("Failed to load VOD analysis %s from ClickHouse", video_id)
+        analysis = None
+    if job is None and analysis is None:
+        raise HTTPException(status_code=404, detail="VOD analysis not found")
+    return VodAnalysisResponse(job=job, analysis=analysis)
+
+
+@router.get("/api/vods/{video_id}/activity", response_model=VodActivity)
+async def vod_activity(
+    video_id: str,
+    bucket_seconds: int | None = Query(default=None, ge=1, le=3600),
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+) -> VodActivity:
+    try:
+        analysis = await clickhouse.get_vod_analysis(video_id)
+    except Exception as exc:
+        logger.exception("Failed to load VOD analysis %s from ClickHouse", video_id)
+        raise HTTPException(status_code=503, detail="VOD activity is temporarily unavailable") from exc
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="VOD analysis not found")
+
+    duration = max(analysis.duration_seconds, 0)
+    bucket = bucket_seconds or analysis.bucket_seconds or 60
+    # Keep caller-chosen buckets from producing an unbounded response.
+    bucket = max(bucket, math.ceil(duration / MAX_VOD_ACTIVITY_BUCKETS), 1)
+    try:
+        buckets = await clickhouse.vod_activity(
+            session_id=vod_session_id(video_id),
+            created_at=analysis.video_created_at,
+            duration_seconds=duration,
+            bucket_seconds=bucket,
+        )
+    except Exception:
+        logger.exception("Failed to load VOD activity for %s from ClickHouse", video_id)
+        buckets = []
+    return VodActivity(video_id=video_id, bucket_seconds=bucket, duration_seconds=duration, buckets=buckets)
+
+
+@router.post(
+    "/api/vods/{video_id}/label",
+    response_model=VodAnalysis,
+    dependencies=[Depends(require_api_key)],
+)
+async def label_vod(
+    video_id: str,
+    service: VodLabelService = Depends(get_vod_label_service),
+) -> VodAnalysis:
+    try:
+        return await service.label(video_id)
+    except (VodNotFoundError, VodNoPeaksError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to label VOD peaks for %s", video_id)
+        raise HTTPException(status_code=500, detail="Failed to label VOD peaks") from exc
 
 
 @router.get("/api/messages/recent", response_model=list[ChatMessage])
