@@ -723,9 +723,8 @@
   }
 
   .controls-status {
-    justify-content: space-between;
-    width: 100%;
-    margin-left: 0;
+    flex: 1 1 auto;
+    justify-content: flex-end;
   }
 
   .metrics .stat {
@@ -745,20 +744,26 @@
     min-height: 0;
   }
 
-  .summary-heading,
-  .transcription-heading,
   .summary-card header {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .summary-actions {
-    width: 100%;
+  /* Keep the collapse chevron on the title row; other actions wrap below. */
+  .summary-heading,
+  .transcription-heading {
+    flex-wrap: wrap;
+    align-items: flex-start;
   }
 
-  .summary-actions select,
-  .summary-actions .btn:not(.btn-icon) {
-    flex: 1;
+  .summary-heading > .card-title,
+  .transcription-heading > .card-title {
+    flex: 1 1 160px;
+  }
+
+  .summary-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .transcription-form {
