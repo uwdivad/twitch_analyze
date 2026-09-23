@@ -1,5 +1,8 @@
 import asyncio
+import logging
+import math
 import time
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -22,6 +25,94 @@ from app.models.chat import (
     TranscriptSegment,
     VolumePoint,
 )
+from app.models.vod import VodActivityBucket, VodAnalysis, VodPeak
+
+logger = logging.getLogger(__name__)
+
+VOD_ANALYSIS_COLUMNS: tuple[str, ...] = (
+    "video_id",
+    "channel_id",
+    "channel_login",
+    "channel_display_name",
+    "title",
+    "video_created_at",
+    "duration_seconds",
+    "bucket_seconds",
+    "message_count",
+    "unique_chatter_count",
+    "status",
+    "error",
+    "peaks",
+    "label_model",
+    "analyzed_at",
+    "updated_at",
+)
+
+CHAT_MESSAGES_TTL_EXPRESSION = "toDateTime(received_at) + INTERVAL 180 DAY DELETE"
+
+VOD_ANALYSES_DDL = """
+    CREATE TABLE IF NOT EXISTS vod_analyses
+    (
+        video_id String,
+        channel_id String,
+        channel_login LowCardinality(String),
+        channel_display_name String,
+        title String,
+        video_created_at DateTime64(3, 'UTC'),
+        duration_seconds UInt32,
+        bucket_seconds UInt16,
+        message_count UInt32,
+        unique_chatter_count UInt32,
+        status LowCardinality(String),
+        error String,
+        peaks String,
+        label_model LowCardinality(String) DEFAULT '',
+        analyzed_at DateTime64(3, 'UTC'),
+        updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    )
+    ENGINE = ReplacingMergeTree(updated_at)
+    ORDER BY video_id
+"""
+
+
+def _to_unix_ms(value: datetime) -> int:
+    """UTC epoch milliseconds; naive datetimes are treated as UTC."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return int(round(value.timestamp() * 1000))
+
+
+def _fill_activity_buckets(
+    rows: Iterable[Sequence[Any]],
+    duration_seconds: int,
+    bucket_seconds: int,
+) -> list[VodActivityBucket]:
+    """Turn sparse ``(bucket_index, message_count, unique_chatter_count)`` rows
+    into a dense, zero-filled bucket list covering ``[0, duration_seconds)``.
+
+    The last bucket may be partial (``ceil``). Negative indices and indices past
+    the end of the VOD are dropped.
+    """
+    if duration_seconds <= 0 or bucket_seconds <= 0:
+        return []
+    bucket_total = math.ceil(duration_seconds / bucket_seconds)
+    by_index: dict[int, tuple[int, int]] = {}
+    for row in rows:
+        index = int(row[0])
+        if 0 <= index < bucket_total:
+            by_index[index] = (int(row[1]), int(row[2]))
+    buckets: list[VodActivityBucket] = []
+    for index in range(bucket_total):
+        message_count, unique_chatter_count = by_index.get(index, (0, 0))
+        buckets.append(
+            VodActivityBucket(
+                index=index,
+                offset_seconds=index * bucket_seconds,
+                message_count=message_count,
+                unique_chatter_count=unique_chatter_count,
+            )
+        )
+    return buckets
 
 
 class ClickHouseRepository:
@@ -92,6 +183,7 @@ class ClickHouseRepository:
             "raw_event",
             "event_ts",
             "received_at",
+            "source",
         ]
         CLICKHOUSE_BATCH_SIZE.observe(len(rows))
         with CLICKHOUSE_INSERT_LATENCY.time():
@@ -135,7 +227,8 @@ class ClickHouseRepository:
                 reply,
                 raw_event,
                 event_ts,
-                received_at
+                received_at,
+                source
             FROM chat_messages
             {where}
             ORDER BY event_ts DESC, message_id
@@ -181,6 +274,7 @@ class ClickHouseRepository:
                 uniqExact(message_id) AS message_count,
                 uniqExact(chatter_user_id) AS unique_chatter_count
             FROM chat_messages
+            WHERE source = 'live'
             GROUP BY channel_login, bucket
             ORDER BY channel_login, bucket DESC
             LIMIT %(limit)s BY channel_login
@@ -336,7 +430,8 @@ class ClickHouseRepository:
                 reply,
                 raw_event,
                 event_ts,
-                received_at
+                received_at,
+                source
             FROM chat_messages
             {where}
             AND length(message_text) > 0
@@ -459,6 +554,197 @@ class ClickHouseRepository:
         async with self._lock:
             await asyncio.to_thread(self._client.command, query)
 
+    async def ensure_vod_schema(self) -> None:
+        """Idempotently migrate existing volumes for VOD analysis.
+
+        The init SQL only runs on a fresh ClickHouse volume, so the consumer
+        worker (which inserts the ``source`` column) and the API call this at
+        startup. Adds ``chat_messages.source``, re-keys the chat_messages TTL on
+        ``received_at`` (VOD replays carry the original air time in ``event_ts``)
+        and creates ``vod_analyses``.
+        """
+        # TODO(integration): backend/app/main.py lifespan must call
+        # `await repo.ensure_vod_schema()` right after `ClickHouseRepository.connect()`
+        # (WS3 owns main.py and adds that call).
+        add_source = (
+            "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS "
+            "source LowCardinality(String) DEFAULT 'live' AFTER received_at"
+        )
+        engine_query = (
+            "SELECT engine_full FROM system.tables WHERE database = currentDatabase() AND name = 'chat_messages'"
+        )
+        modify_ttl = f"ALTER TABLE chat_messages MODIFY TTL {CHAT_MESSAGES_TTL_EXPRESSION}"
+        async with self._lock:
+            await asyncio.to_thread(self._client.command, add_source)
+            engine_full = await asyncio.to_thread(self._client.command, engine_query)
+            if "toDateTime(received_at)" not in str(engine_full):
+                # Skip rewriting existing parts: for live rows received_at ~= event_ts,
+                # so the old per-part TTL info is equivalent; merges pick up the new rule.
+                await asyncio.to_thread(
+                    self._client.command,
+                    modify_ttl,
+                    settings={"materialize_ttl_after_modify": 0},
+                )
+            await asyncio.to_thread(self._client.command, VOD_ANALYSES_DDL)
+
+    async def vod_message_count(self, session_id: str) -> int:
+        query = """
+            SELECT uniqExact(message_id)
+            FROM chat_messages
+            WHERE session_id = %(session_id)s AND source = 'vod'
+        """
+        result = await self._query(query, {"session_id": session_id})
+        if not result.result_rows:
+            return 0
+        return int(result.result_rows[0][0])
+
+    async def vod_activity(
+        self,
+        *,
+        session_id: str,
+        created_at: datetime,
+        duration_seconds: int,
+        bucket_seconds: int,
+    ) -> list[VodActivityBucket]:
+        if duration_seconds <= 0 or bucket_seconds <= 0:
+            return []
+        query = """
+            SELECT
+                intDiv(toUnixTimestamp64Milli(event_ts) - %(created_ms)s, %(bucket_ms)s) AS bucket_index,
+                uniqExact(message_id) AS message_count,
+                uniqExact(chatter_user_id) AS unique_chatter_count
+            FROM chat_messages
+            WHERE session_id = %(session_id)s AND source = 'vod'
+                AND toUnixTimestamp64Milli(event_ts) >= %(created_ms)s
+            GROUP BY bucket_index
+            ORDER BY bucket_index
+        """
+        # Integer ms, not datetime params: clickhouse-connect renders datetimes at
+        # whole-second precision, which would let pre-start messages into bucket 0.
+        params = {
+            "session_id": session_id,
+            "created_ms": _to_unix_ms(created_at),
+            "bucket_ms": int(bucket_seconds) * 1000,
+        }
+        result = await self._query(query, params)
+        return _fill_activity_buckets(result.result_rows, duration_seconds, bucket_seconds)
+
+    async def vod_peak_context(
+        self,
+        *,
+        session_id: str,
+        window_start: datetime,
+        window_end: datetime,
+        top_limit: int = 5,
+        token_limit: int = 40,
+        sample_limit: int = 20,
+    ) -> tuple[int, int, list[TopItem], list[TopItem], list[str]]:
+        """Return ``(message_count, unique_chatters, top_emotes, top_tokens, samples)``
+        for VOD chat in ``[window_start, window_end)``."""
+        where = (
+            "WHERE session_id = %(session_id)s AND source = 'vod' "
+            "AND toUnixTimestamp64Milli(event_ts) >= %(start_ms)s "
+            "AND toUnixTimestamp64Milli(event_ts) < %(end_ms)s"
+        )
+        params: dict[str, Any] = {
+            "session_id": session_id,
+            "start_ms": _to_unix_ms(window_start),
+            "end_ms": _to_unix_ms(window_end),
+        }
+        stats_query = f"""
+            SELECT uniqExact(message_id), uniqExact(chatter_user_id)
+            FROM chat_messages
+            {where}
+        """
+        emotes_query = f"""
+            SELECT JSONExtractString(arrayJoin(JSONExtractArrayRaw(emotes)), 'text') AS emote, count() AS emote_count
+            FROM (
+                SELECT message_id, emotes
+                FROM chat_messages
+                {where}
+                LIMIT 1 BY message_id
+            )
+            GROUP BY emote
+            HAVING emote != ''
+            ORDER BY emote_count DESC, emote
+            LIMIT %(top_limit)s
+        """
+        tokens_query = f"""
+            SELECT token, count() AS token_count
+            FROM (
+                SELECT message_id, message_text
+                FROM chat_messages
+                {where}
+                LIMIT 1 BY message_id
+            )
+            ARRAY JOIN splitByNonAlpha(lowerUTF8(message_text)) AS token
+            WHERE length(token) >= 3
+            GROUP BY token
+            ORDER BY token_count DESC, token
+            LIMIT %(token_limit)s
+        """
+        sample_query = f"""
+            SELECT chatter_display_name, chatter_login, message_text
+            FROM chat_messages
+            {where}
+            AND length(message_text) > 0
+            ORDER BY cityHash64(message_id), message_id
+            LIMIT 1 BY message_id
+            LIMIT %(sample_limit)s
+        """
+        stats_result = await self._query(stats_query, params)
+        emotes_result = await self._query(emotes_query, {**params, "top_limit": top_limit})
+        tokens_result = await self._query(tokens_query, {**params, "token_limit": token_limit})
+        sample_result = await self._query(sample_query, {**params, "sample_limit": sample_limit})
+
+        stats_row = stats_result.result_rows[0] if stats_result.result_rows else (0, 0)
+        emotes = [TopItem(value=str(row[0]), count=int(row[1])) for row in emotes_result.result_rows]
+        tokens = [TopItem(value=str(row[0]), count=int(row[1])) for row in tokens_result.result_rows]
+        samples = [f"{row[0] or row[1]}: {row[2]}" for row in sample_result.result_rows]
+        return int(stats_row[0]), int(stats_row[1]), emotes, tokens, samples
+
+    async def upsert_vod_analysis(self, analysis: VodAnalysis) -> None:
+        """Insert a full row; callers must bump ``updated_at`` on every write because ReplacingMergeTree dedups on it."""
+        # ReplacingMergeTree(updated_at) keeps the newest row per video_id, so a
+        # full-row insert is an upsert; updated_at comes from the model.
+        row = self._vod_analysis_row(analysis)
+        async with self._lock:
+            await asyncio.to_thread(
+                self._client.insert,
+                "vod_analyses",
+                [row],
+                column_names=list(VOD_ANALYSIS_COLUMNS),
+            )
+
+    async def get_vod_analysis(self, video_id: str) -> VodAnalysis | None:
+        query = f"""
+            SELECT {", ".join(VOD_ANALYSIS_COLUMNS)}
+            FROM vod_analyses
+            WHERE video_id = %(id)s
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """
+        result = await self._query(query, {"id": video_id})
+        if not result.result_rows:
+            return None
+        return self._vod_analysis_from_row(result.result_rows[0])
+
+    async def recent_vod_analyses(self, limit: int = 20) -> list[VodAnalysis]:
+        columns = ", ".join(VOD_ANALYSIS_COLUMNS)
+        query = f"""
+            SELECT {columns}
+            FROM (
+                SELECT {columns}
+                FROM vod_analyses
+                ORDER BY updated_at DESC
+                LIMIT 1 BY video_id
+            )
+            ORDER BY analyzed_at DESC
+            LIMIT %(limit)s
+        """
+        result = await self._query(query, {"limit": limit})
+        return [self._vod_analysis_from_row(row) for row in result.result_rows]
+
     async def recent_summaries(
         self,
         channel: str | None = None,
@@ -494,9 +780,22 @@ class ClickHouseRepository:
         async with self._lock:
             return await asyncio.to_thread(self._client.query, query, params)
 
-    def _message_filters(self, channel: str | None, session_id: str | None) -> tuple[str, dict[str, Any]]:
+    def _message_filters(
+        self,
+        channel: str | None,
+        session_id: str | None,
+        source: str | None = "live",
+    ) -> tuple[str, dict[str, Any]]:
+        """Build a WHERE clause for chat_messages.
+
+        ``source`` defaults to ``"live"`` so every dashboard query silently
+        excludes replayed VOD chat; pass ``None`` to disable the filter.
+        """
         filters: list[str] = []
         params: dict[str, Any] = {}
+        if source is not None:
+            filters.append("source = %(source)s")
+            params["source"] = source
         if channel:
             filters.append("channel_login = %(channel)s")
             params["channel"] = channel.lower()
@@ -528,6 +827,7 @@ class ClickHouseRepository:
             dumps(message.raw_event),
             message.event_ts,
             message.received_at,
+            message.source,
         )
 
     def _message_from_row(self, row: tuple[Any, ...]) -> ChatMessage:
@@ -551,6 +851,7 @@ class ClickHouseRepository:
             raw_event=loads(row[16]),
             event_ts=self._as_utc(row[17]),
             received_at=self._as_utc(row[18]),
+            source=str(row[19]) if len(row) > 19 and row[19] else "live",
         )
 
     def _summary_from_row(self, row: tuple[Any, ...]) -> ChatSummary:
@@ -591,6 +892,48 @@ class ClickHouseRepository:
             segment.status,
             segment.error,
             segment.created_at,
+        )
+
+    def _vod_analysis_row(self, analysis: VodAnalysis) -> tuple[Any, ...]:
+        """Row in ``VOD_ANALYSIS_COLUMNS`` order; peaks are stored as a JSON array."""
+        return (
+            analysis.video_id,
+            analysis.channel_id,
+            analysis.channel_login,
+            analysis.channel_display_name,
+            analysis.title,
+            analysis.video_created_at,
+            max(0, int(analysis.duration_seconds)),
+            max(0, int(analysis.bucket_seconds)),
+            max(0, int(analysis.message_count)),
+            max(0, int(analysis.unique_chatter_count)),
+            analysis.status,
+            analysis.error,
+            dumps([peak.model_dump(mode="json") for peak in analysis.peaks]),
+            analysis.label_model,
+            analysis.analyzed_at,
+            analysis.updated_at,
+        )
+
+    def _vod_analysis_from_row(self, row: Sequence[Any]) -> VodAnalysis:
+        raw_peaks = loads(row[12]) if row[12] else []
+        return VodAnalysis(
+            video_id=str(row[0]),
+            channel_id=str(row[1]),
+            channel_login=str(row[2]),
+            channel_display_name=str(row[3]),
+            title=str(row[4]),
+            video_created_at=self._as_utc(row[5]),
+            duration_seconds=int(row[6]),
+            bucket_seconds=int(row[7]),
+            message_count=int(row[8]),
+            unique_chatter_count=int(row[9]),
+            status=str(row[10]),
+            error=str(row[11]),
+            peaks=[VodPeak.model_validate(peak) for peak in raw_peaks],
+            label_model=str(row[13] or ""),
+            analyzed_at=self._as_utc(row[14]),
+            updated_at=self._as_utc(row[15]),
         )
 
     def _window_end(self, window_start: datetime, window_size: str, source_stats: dict[str, Any]) -> datetime:
