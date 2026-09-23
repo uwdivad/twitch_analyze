@@ -57,6 +57,15 @@ class ClickHouseConsumerWorker:
             password=settings.clickhouse_password,
             database=settings.clickhouse_database,
         )
+        # The init SQL never re-runs on existing volumes, and this worker inserts the
+        # `source` column, so migrate before consuming. Failure is logged, not fatal:
+        # inserts will then surface the real error and be retried without committing.
+        # TODO(integration): main.py's lifespan must also call ensure_vod_schema()
+        # after ClickHouseRepository.connect() (owned by WS3).
+        try:
+            await self._repo.ensure_vod_schema()
+        except Exception:
+            logger.exception("Failed to ensure VOD ClickHouse schema; continuing")
         await self._start_consumer_with_retry()
         WORKER_KAFKA_CONNECTED.set(1)
         logger.info("ClickHouse consumer started")

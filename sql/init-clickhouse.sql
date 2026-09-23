@@ -45,14 +45,18 @@ CREATE TABLE IF NOT EXISTS twitch_analyze.chat_messages
     raw_event String,
     event_ts DateTime64(3, 'UTC'),
     received_at DateTime64(3, 'UTC'),
+    -- 'live' for realtime ingest, 'vod' for replayed VOD chat.
+    source LowCardinality(String) DEFAULT 'live',
     inserted_at DateTime64(3, 'UTC') DEFAULT now64(3)
 )
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(event_ts)
 ORDER BY (channel_id, session_id, event_ts, message_id)
 -- TTLs only apply to fresh volumes (this script runs on first init);
--- existing deployments need ALTER TABLE ... MODIFY TTL.
-TTL toDateTime(event_ts) + INTERVAL 180 DAY DELETE;
+-- existing deployments need ALTER TABLE ... MODIFY TTL (ensure_vod_schema does this).
+-- TTL is keyed on received_at, not event_ts: VOD replays carry the original air
+-- time in event_ts and would otherwise be deleted immediately for old VODs.
+TTL toDateTime(received_at) + INTERVAL 180 DAY DELETE;
 
 CREATE TABLE IF NOT EXISTS twitch_analyze.chat_summaries
 (
@@ -90,3 +94,26 @@ PARTITION BY toYYYYMM(segment_started_at)
 ORDER BY (channel_login, session_id, segment_started_at, segment_id)
 -- TTL applies to fresh volumes only; see note on chat_messages above.
 TTL toDateTime(segment_started_at) + INTERVAL 180 DAY DELETE;
+
+-- One row per analyzed VOD; peaks is a JSON array of VodPeak objects.
+CREATE TABLE IF NOT EXISTS twitch_analyze.vod_analyses
+(
+    video_id String,
+    channel_id String,
+    channel_login LowCardinality(String),
+    channel_display_name String,
+    title String,
+    video_created_at DateTime64(3, 'UTC'),
+    duration_seconds UInt32,
+    bucket_seconds UInt16,
+    message_count UInt32,
+    unique_chatter_count UInt32,
+    status LowCardinality(String),
+    error String,
+    peaks String,
+    label_model LowCardinality(String) DEFAULT '',
+    analyzed_at DateTime64(3, 'UTC'),
+    updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY video_id;

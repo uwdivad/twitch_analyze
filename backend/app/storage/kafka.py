@@ -41,6 +41,15 @@ class KafkaJsonProducer:
             await self._producer.stop()
             self._producer = None
 
+    async def flush(self) -> None:
+        """Wait until every queued message has been delivered (or failed).
+
+        Used by bulk producers (e.g. VOD replay) that enqueue without awaiting
+        per-message acks. No-op when the producer is not started.
+        """
+        if self._producer is not None:
+            await self._producer.flush()
+
     @staticmethod
     def _message_key(message: BaseModel) -> str:
         channel = getattr(message, "channel_id", "") or getattr(message, "channel_login", "")
