@@ -26,6 +26,8 @@ const LABEL_CHAR_PX = 6.2;
 const LABEL_GAP_PX = 8;
 const MIN_TICK_SPACING_PX = 72;
 const TICK_STEPS_SECONDS = [300, 600, 900, 1800, 3600, 7200, 14400];
+// Used for clamping until the tooltip has been measured once.
+const TOOLTIP_FALLBACK_WIDTH = 240;
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
@@ -78,6 +80,22 @@ type Hover = { x: number; bucket: VodActivityBucket };
 export function VodActivityBar({ activity, peaks, currentTime, durationSeconds, onSeek }: VodActivityBarProps) {
   const [wrapperRef, width] = useElementWidth<HTMLDivElement>();
   const [hover, setHover] = React.useState<Hover | null>(null);
+  const tooltipRef = React.useRef<HTMLDivElement | null>(null);
+  const [tooltipWidth, setTooltipWidth] = React.useState(TOOLTIP_FALLBACK_WIDTH);
+
+  // Measure the tooltip after each hover change so it can be clamped inside the bar.
+  React.useLayoutEffect(() => {
+    const measured = tooltipRef.current?.offsetWidth;
+    if (measured && measured !== tooltipWidth) {
+      setTooltipWidth(measured);
+    }
+  }, [hover, tooltipWidth]);
+
+  // The tooltip is centred on `left` (translateX(-50%)); keep it fully inside.
+  const tooltipLeft = (x: number) => {
+    const half = tooltipWidth / 2;
+    return width <= tooltipWidth ? width / 2 : Math.min(Math.max(x, half), width - half);
+  };
 
   const bucketSeconds = activity?.bucket_seconds ?? 0;
   const duration = React.useMemo(() => {
@@ -122,7 +140,8 @@ export function VodActivityBar({ activity, peaks, currentTime, durationSeconds, 
       const y = BARS_BOTTOM - Math.max(1, h);
       const w = Math.min(barWidth, Math.max(1, width - x));
       const d = barPath(x, y, w);
-      const inPeak = extents.some(([start, end]) => bucket.offset_seconds >= start && bucket.offset_seconds < end);
+      const bucketEnd = bucket.offset_seconds + bucketSeconds;
+      const inPeak = extents.some(([start, end]) => bucket.offset_seconds < end && bucketEnd > start);
       if (inPeak) {
         highlighted += d;
       } else {
@@ -209,7 +228,7 @@ export function VodActivityBar({ activity, peaks, currentTime, durationSeconds, 
           width={width}
           height={HEIGHT}
           viewBox={`0 0 ${width} ${HEIGHT}`}
-          role="img"
+          role="group"
           aria-label={ariaLabel}
           onMouseMove={handleMove}
           onMouseLeave={() => setHover(null)}
@@ -301,8 +320,9 @@ export function VodActivityBar({ activity, peaks, currentTime, durationSeconds, 
 
       {hover ? (
         <div
+          ref={tooltipRef}
           className="vod-activity-tooltip tooltip-card"
-          style={{ left: Math.min(Math.max(hover.x, 90), Math.max(90, width - 90)) }}
+          style={{ left: tooltipLeft(hover.x) }}
           role="status"
         >
           <span className="vod-mono">{formatOffset(hover.bucket.offset_seconds)}</span>

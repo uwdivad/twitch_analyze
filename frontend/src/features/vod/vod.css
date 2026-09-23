@@ -1,6 +1,8 @@
-/* VOD analysis view. Only .vod-* selectors live here; shared primitives
-   (.btn, .field, .card, .stat, .skeleton, .tooltip-card, ...) are styled by the
-   global theme. Everything reads design tokens so the light/dark toggle applies. */
+/* VOD analysis view. Only .vod-* selectors live here. Visual treatment of the
+   shared primitives (.btn, .field, .card, .stat, .skeleton, .tooltip-card, ...)
+   comes from the global theme, so these rules stick to layout plus the
+   view-specific pieces (activity bar, peak rows, status/progress, errors).
+   Everything reads design tokens so the light/dark toggle applies. */
 
 .vod-view {
   display: flex;
@@ -57,32 +59,11 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: var(--surface);
 }
 
 .vod-form-input {
   flex: 1 1 320px;
   min-width: 0;
-  height: 40px;
-  padding: 0 var(--space-4);
-  border: 1px solid transparent;
-  border-radius: var(--radius-full);
-  background: var(--input);
-  color: var(--fg);
-  font: inherit;
-  font-size: 14px;
-  outline: none;
-}
-
-.vod-form-input:hover {
-  background: var(--input-hover);
-}
-
-.vod-form-input:focus-visible {
-  border-color: var(--accent);
 }
 
 .vod-form-check {
@@ -100,25 +81,8 @@
 }
 
 .vod-form-submit {
-  height: 40px;
-  padding: 0 var(--space-5);
-  border: 0;
-  border-radius: var(--radius-full);
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
-  font: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.vod-form-submit:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-
-.vod-form-submit:disabled {
-  opacity: 0.5;
-  cursor: default;
+  flex: none;
+  color: #fff; /* white on Twitch purple in both themes */
 }
 
 /* Status + errors */
@@ -128,9 +92,6 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--card);
 }
 
 .vod-status-line {
@@ -211,9 +172,6 @@
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--card);
 }
 
 .vod-player {
@@ -222,7 +180,7 @@
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: var(--radius-md);
-  background: var(--player-bg, #000);
+  background: #000; /* video letterbox is black regardless of theme */
 }
 
 .vod-player-frame,
@@ -238,10 +196,6 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-}
-
-.vod-player-overlay.skeleton {
-  background: var(--surface-raised);
 }
 
 .vod-player-failed {
@@ -310,6 +264,11 @@
   fill: transparent;
 }
 
+.vod-peak-marker:focus-visible .vod-peak-hit {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
 .vod-peak-line {
   stroke: var(--live);
   stroke-width: 1.5;
@@ -347,8 +306,6 @@
   right: 0;
   top: 30px;
   height: 70px;
-  border-radius: var(--radius-xs);
-  background: var(--input);
   pointer-events: none;
 }
 
@@ -356,13 +313,6 @@
   position: absolute;
   bottom: calc(100% - 26px);
   transform: translateX(-50%);
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xs);
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-2);
-  color: var(--fg);
-  font-size: 12px;
   white-space: nowrap;
   pointer-events: none;
 }
@@ -381,10 +331,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  min-width: 0;
   padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--card);
 }
 
 .vod-card-heading {
@@ -498,9 +446,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--input);
+  min-width: 0;
 }
 
 .vod-stat-label {
@@ -513,10 +459,12 @@
 }
 
 .vod-stat-value {
+  min-width: 0;
   font-family: var(--font-display);
   font-size: 18px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .vod-side-field {
@@ -525,40 +473,11 @@
   gap: var(--space-2);
 }
 
-.vod-side-field select {
-  height: 36px;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: var(--input);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-}
-
 .vod-label-action {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
-}
-
-.vod-label-action .btn {
-  height: 36px;
-  padding: 0 var(--space-4);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-full);
-  background: var(--fg);
-  color: var(--bg);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.vod-label-action .btn:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* Recent analyses */
@@ -635,7 +554,6 @@
 
   .vod-form {
     flex-wrap: wrap;
-    border-radius: var(--radius-lg);
   }
 
   .vod-form-input {
@@ -644,6 +562,12 @@
 
   .vod-form-submit {
     margin-left: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .vod-stats {
+    grid-template-columns: 1fr 1fr;
   }
 }
 

@@ -42,7 +42,8 @@ function loadTwitchEmbed(): Promise<void> {
 }
 
 export type VodPlayerHandle = {
-  seek: (seconds: number) => void;
+  // Returns false (and does nothing) until the player has reported READY.
+  seek: (seconds: number) => boolean;
   getCurrentTime: () => number;
 };
 
@@ -59,6 +60,9 @@ export const VodPlayer = React.forwardRef<VodPlayerHandle, VodPlayerProps>(funct
   const playerRef = React.useRef<TwitchPlayer | null>(null);
   const loadedVideoRef = React.useRef(videoId);
   const onTimeUpdateRef = React.useRef(onTimeUpdate);
+  const readyRef = React.useRef(false);
+  // Last time reported to onTimeUpdate; reset to force the next poll to re-sync.
+  const lastTimeRef = React.useRef(-1);
   const [state, setState] = React.useState<'loading' | 'ready' | 'failed'>('loading');
 
   React.useEffect(() => {
@@ -69,7 +73,13 @@ export const VodPlayer = React.forwardRef<VodPlayerHandle, VodPlayerProps>(funct
     ref,
     () => ({
       seek: (seconds: number) => {
-        playerRef.current?.seek(Math.max(0, seconds));
+        const player = playerRef.current;
+        if (!player || !readyRef.current) {
+          return false;
+        }
+        player.seek(Math.max(0, seconds));
+        lastTimeRef.current = -1;
+        return true;
       },
       getCurrentTime: () => playerRef.current?.getCurrentTime() ?? 0
     }),
@@ -86,7 +96,6 @@ export const VodPlayer = React.forwardRef<VodPlayerHandle, VodPlayerProps>(funct
     let disposed = false;
     let pollTimer: number | null = null;
     let fallbackTimer: number | null = null;
-    let lastTime = -1;
 
     loadTwitchEmbed()
       .then(() => {
@@ -107,6 +116,7 @@ export const VodPlayer = React.forwardRef<VodPlayerHandle, VodPlayerProps>(funct
         playerRef.current = player;
 
         const markReady = () => {
+          readyRef.current = true;
           if (!disposed) {
             setState('ready');
           }
@@ -121,8 +131,8 @@ export const VodPlayer = React.forwardRef<VodPlayerHandle, VodPlayerProps>(funct
           } catch {
             return;
           }
-          if (Number.isFinite(seconds) && seconds !== lastTime) {
-            lastTime = seconds;
+          if (Number.isFinite(seconds) && seconds !== lastTimeRef.current) {
+            lastTimeRef.current = seconds;
             onTimeUpdateRef.current(seconds);
           }
         }, TIME_POLL_MS);
@@ -147,6 +157,8 @@ export const VodPlayer = React.forwardRef<VodPlayerHandle, VodPlayerProps>(funct
         // Best effort; clearing the container below removes the iframe anyway.
       }
       playerRef.current = null;
+      readyRef.current = false;
+      lastTimeRef.current = -1;
       container.innerHTML = '';
     };
   }, []);

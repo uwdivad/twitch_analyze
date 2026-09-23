@@ -54,8 +54,11 @@ export function VodView() {
   const [currentTime, setCurrentTime] = React.useState(0);
 
   const handleSeek = React.useCallback((seconds: number) => {
-    playerRef.current?.seek(seconds);
-    setCurrentTime(seconds);
+    // Before the player is READY the seek is dropped, so leave the playhead
+    // where the player actually is instead of jumping it.
+    if (playerRef.current?.seek(seconds)) {
+      setCurrentTime(seconds);
+    }
   }, []);
 
   const handleAnalyze = React.useCallback(
@@ -75,7 +78,10 @@ export function VodView() {
   const jobError = job?.status === 'failed' ? job.error || job.detail || 'VOD analysis failed' : '';
   const analysisFailed = analysis?.status === 'failed';
   const showAnalysis = !!analysis && !analysisFailed;
-  const selectedBucket = vod.bucketSeconds ?? activity?.bucket_seconds ?? analysis?.bucket_seconds ?? 0;
+  // Prefer what the backend actually returned: it may clamp the requested size.
+  const selectedBucket = activity?.bucket_seconds ?? vod.bucketSeconds ?? analysis?.bucket_seconds ?? 0;
+  // Sizes below this would produce more than ~3600 buckets; the backend rejects or clamps them.
+  const minBucketSeconds = Math.ceil((analysis?.duration_seconds ?? 0) / 3600);
   const bucketOptions = selectedBucket && !BUCKET_OPTIONS.includes(selectedBucket)
     ? [...BUCKET_OPTIONS, selectedBucket].sort((a, b) => a - b)
     : BUCKET_OPTIONS;
@@ -91,7 +97,7 @@ export function VodView() {
       <VodForm isStarting={vod.isStarting} onAnalyze={handleAnalyze} />
 
       {progress && job ? (
-        <div className="vod-status" role="status" aria-live="polite">
+        <div className="vod-status card" role="status" aria-live="polite">
           <div className="vod-status-line">
             <span className="vod-status-dot" aria-hidden="true" />
             <span className="vod-mono">{progress.text}</span>
@@ -191,7 +197,7 @@ export function VodView() {
                   onChange={(event) => vod.setBucketSeconds(Number(event.target.value))}
                 >
                   {bucketOptions.map((seconds) => (
-                    <option key={seconds} value={seconds}>
+                    <option key={seconds} value={seconds} disabled={seconds < minBucketSeconds}>
                       {seconds < 60 ? `${seconds} s` : `${seconds / 60} min`}
                       {seconds === analysis.bucket_seconds ? ' (default)' : ''}
                     </option>
