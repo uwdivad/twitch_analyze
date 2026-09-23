@@ -574,7 +574,8 @@ class ClickHouseRepository:
         async with self._lock:
             await asyncio.to_thread(self._client.command, add_source)
             engine_full = await asyncio.to_thread(self._client.command, engine_query)
-            if "toDateTime(received_at)" not in str(engine_full):
+            ttl_migrated = "toDateTime(received_at)" not in str(engine_full)
+            if ttl_migrated:
                 # Skip rewriting existing parts: for live rows received_at ~= event_ts,
                 # so the old per-part TTL info is equivalent; merges pick up the new rule.
                 await asyncio.to_thread(
@@ -583,6 +584,10 @@ class ClickHouseRepository:
                     settings={"materialize_ttl_after_modify": 0},
                 )
             await asyncio.to_thread(self._client.command, VOD_ANALYSES_DDL)
+        logger.info(
+            "VOD schema ensured: chat_messages.source present, TTL on received_at (%s), vod_analyses present",
+            "migrated now" if ttl_migrated else "already set",
+        )
 
     async def vod_message_count(self, session_id: str) -> int:
         query = """
