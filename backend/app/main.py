@@ -36,10 +36,18 @@ async def lifespan(app: FastAPI):
         password=settings.clickhouse_password,
         database=settings.clickhouse_database,
     )
+    try:
+        # Idempotent CREATE TABLE IF NOT EXISTS for the VOD analysis tables, so existing
+        # ClickHouse volumes (initialized before VOD support) gain them on startup.
+        await app.state.clickhouse.ensure_vod_schema()
+    except Exception:
+        logger.warning("Failed to ensure VOD analysis schema in ClickHouse", exc_info=True)
     app.state.kafka = KafkaChatProducer(settings.kafka_bootstrap_servers, settings.kafka_chat_topic)
     app.state.ingestion_task = None
     app.state.transcription_jobs = {}
     app.state.transcription_tasks = {}
+    app.state.vod_jobs = {}
+    app.state.vod_tasks = {}
 
     await app.state.kafka.start()
 
@@ -125,6 +133,16 @@ async def lifespan(app: FastAPI):
                 pass
             except Exception:
                 logger.exception("Transcription task raised during shutdown")
+        vod_tasks = list(app.state.vod_tasks.values())
+        for vod_task in vod_tasks:
+            vod_task.cancel()
+        for vod_task in vod_tasks:
+            try:
+                await vod_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("VOD analysis task raised during shutdown")
         try:
             await app.state.kafka.stop()
         except Exception:
