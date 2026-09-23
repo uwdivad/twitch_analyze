@@ -49,10 +49,11 @@ export function ChannelControls({
   onRefresh
 }: ChannelControlsProps) {
   return (
-    <section className="controls" aria-busy={isUpdating}>
-      <label>
+    <section className="toolbar" aria-busy={isUpdating} aria-label="Dashboard controls">
+      <label className="field-label toolbar-channel">
         <span>Channel</span>
         <select
+          className="field"
           value={selectedChannel}
           onChange={(event) => onChannelChange(event.target.value)}
         >
@@ -65,9 +66,10 @@ export function ChannelControls({
           ))}
         </select>
       </label>
-      <label>
+      <label className="field-label">
         <span>Time window</span>
         <select
+          className="field"
           value={volumeWindowMinutes}
           onChange={(event) => onVolumeWindowChange(Number(event.target.value))}
         >
@@ -78,9 +80,10 @@ export function ChannelControls({
           ))}
         </select>
       </label>
-      <label>
+      <label className="field-label">
         <span>Update every</span>
         <select
+          className="field"
           value={liveUpdateIntervalMs}
           onChange={(event) => onLiveUpdateIntervalChange(Number(event.target.value))}
         >
@@ -91,7 +94,7 @@ export function ChannelControls({
           ))}
         </select>
       </label>
-      <div className="toggle-control" title="Streams messages over SSE; off pauses live updates and hides the feed">
+      <div className="field-label toggle-control" title="Streams messages over SSE; off pauses live updates and hides the feed">
         <span>Live updates</span>
         <div className="switch-wrapper">
           <label className="switch">
@@ -103,11 +106,17 @@ export function ChannelControls({
             />
             <span className="slider"></span>
           </label>
+          <span className="switch-state">{showLiveFeed ? 'On' : 'Off'}</span>
         </div>
       </div>
       <div className="controls-status">
         <LastUpdated lastUpdatedAt={lastUpdatedAt} />
-        <button className="button-ghost" disabled={isUpdating} onClick={onRefresh} type="button">
+        <button
+          className={`btn btn-ghost${isUpdating ? ' is-busy' : ''}`}
+          disabled={isUpdating}
+          onClick={onRefresh}
+          type="button"
+        >
           <RefreshCw size={16} />
           {isUpdating ? 'Updating' : 'Refresh'}
         </button>

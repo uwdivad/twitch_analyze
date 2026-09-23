@@ -18,8 +18,11 @@ import { Topbar } from './components/Topbar';
 import { TopList } from './components/TopList';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { VolumeChart } from './components/VolumeChart';
+import { VodView } from './features/vod/VodView';
 import { useLiveMessages } from './hooks/useLiveMessages';
+import { useTheme } from './hooks/useTheme';
 import type {
+  AppView,
   ChannelInfo,
   ChannelVolumeSeries,
   ChatMessage,
@@ -37,7 +40,34 @@ import {
   mergeVolumeSeries
 } from './utils/analytics';
 
+function viewFromHash(hash: string): AppView {
+  return hash.replace(/^#/, '') === 'vods' ? 'vods' : 'live';
+}
+
+// The active view lives in location.hash (#live / #vods) so it survives reloads
+// and works with back/forward.
+function useHashView(): [AppView, (view: AppView) => void] {
+  const [view, setViewState] = React.useState<AppView>(() => viewFromHash(window.location.hash));
+
+  React.useEffect(() => {
+    const handleHashChange = () => setViewState(viewFromHash(window.location.hash));
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  const setView = React.useCallback((next: AppView) => {
+    if (viewFromHash(window.location.hash) !== next) {
+      window.location.hash = next;
+    }
+    setViewState(next);
+  }, []);
+
+  return [view, setView];
+}
+
 export function App() {
+  const [view, setView] = useHashView();
+  const { theme, toggleTheme } = useTheme();
   const [channels, setChannels] = React.useState<ChannelInfo[]>([]);
   const [selectedChannel, setSelectedChannel] = React.useState<string>('');
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
@@ -358,78 +388,100 @@ export function App() {
   );
 
   return (
-    <main className="shell">
-      <Topbar socketState={socketState} />
-      <ChannelControls
-        channels={channels}
-        selectedChannel={selectedChannel}
-        volumeWindowMinutes={volumeWindowMinutes}
-        liveUpdateIntervalMs={liveUpdateIntervalMs}
-        showLiveFeed={showLiveFeed}
-        isUpdating={isDashboardUpdating}
-        lastUpdatedAt={lastUpdatedAt}
-        onChannelChange={setSelectedChannel}
-        onVolumeWindowChange={setVolumeWindowMinutes}
-        onLiveUpdateIntervalChange={setLiveUpdateIntervalMs}
-        onShowLiveFeedChange={setShowLiveFeed}
-        onRefresh={loadDashboard}
+    <div className="app">
+      <Topbar
+        socketState={socketState}
+        view={view}
+        onViewChange={setView}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
-      {error ? <div className="error">{error}</div> : null}
+      {/* Top-level hooks (SSE feed, polling) stay mounted in both views; only the body switches. */}
+      <main className="shell">
+        {view === 'vods' ? (
+          <VodView />
+        ) : (
+          <div className="live-view">
+            <header className="page-header">
+              <h1>
+                Twitch Analyze <span className="muted">live chat analytics</span>
+              </h1>
+            </header>
 
-      <Metrics
-        messageTotal={messageTotal}
-        uniqueChatters={uniqueChatters}
-        latestRate={latestRate}
-        peakMinute={peakMinute}
-        channelLabel={activeChannel ? `#${activeChannel}` : 'all channels'}
-        windowLabel={volumeWindowLabel}
-      />
-
-      <div className={`dashboard-layout${showLiveFeed ? ' with-feed' : ''}`}>
-        <div className="dashboard-main">
-          <section className="grid">
-            <VolumeChart volume={volume} windowLabel={volumeWindowLabel} windowMinutes={volumeWindowMinutes} />
-            <TopList title="Top Chatters" items={visibleTopChatters} />
-            <TopList title="Top Emotes" items={topEmotes} />
-          </section>
-
-          {!activeChannel ? (
-            <ChannelVolumeCharts
+            <ChannelControls
               channels={channels}
-              channelVolumes={channelVolumes}
+              selectedChannel={selectedChannel}
+              volumeWindowMinutes={volumeWindowMinutes}
+              liveUpdateIntervalMs={liveUpdateIntervalMs}
+              showLiveFeed={showLiveFeed}
+              isUpdating={isDashboardUpdating}
+              lastUpdatedAt={lastUpdatedAt}
+              onChannelChange={setSelectedChannel}
+              onVolumeWindowChange={setVolumeWindowMinutes}
+              onLiveUpdateIntervalChange={setLiveUpdateIntervalMs}
+              onShowLiveFeedChange={setShowLiveFeed}
+              onRefresh={loadDashboard}
+            />
+
+            {error ? <div className="alert error" role="alert">{error}</div> : null}
+
+            <Metrics
+              messageTotal={messageTotal}
+              uniqueChatters={uniqueChatters}
+              latestRate={latestRate}
+              peakMinute={peakMinute}
+              channelLabel={activeChannel ? `#${activeChannel}` : 'all channels'}
               windowLabel={volumeWindowLabel}
             />
-          ) : null}
-        </div>
 
-        {showLiveFeed ? (
-          <aside className="dashboard-side">
-            <LiveFeed
+            <div className={`dashboard-layout${showLiveFeed ? ' with-feed' : ''}`}>
+              <div className="dashboard-main">
+                <section className="grid">
+                  <VolumeChart volume={volume} windowLabel={volumeWindowLabel} windowMinutes={volumeWindowMinutes} />
+                  <TopList title="Top chatters" items={visibleTopChatters} />
+                  <TopList title="Top emotes" items={topEmotes} />
+                </section>
+
+                {!activeChannel ? (
+                  <ChannelVolumeCharts
+                    channels={channels}
+                    channelVolumes={channelVolumes}
+                    windowLabel={volumeWindowLabel}
+                  />
+                ) : null}
+              </div>
+
+              {showLiveFeed ? (
+                <aside className="dashboard-side">
+                  <LiveFeed
+                    activeChannel={activeChannel}
+                    messages={messages}
+                    hideBots={hideBots}
+                    onHideBotsChange={setHideBots}
+                  />
+                </aside>
+              ) : null}
+            </div>
+
+            <SummaryPanel
               activeChannel={activeChannel}
-              messages={messages}
-              hideBots={hideBots}
-              onHideBotsChange={setHideBots}
+              summaries={summaries}
+              isLoading={isSummaryGenerating}
+              error={summaryError}
+              onGenerate={handleGenerateSummary}
             />
-          </aside>
-        ) : null}
-      </div>
 
-      <SummaryPanel
-        activeChannel={activeChannel}
-        summaries={summaries}
-        isLoading={isSummaryGenerating}
-        error={summaryError}
-        onGenerate={handleGenerateSummary}
-      />
-
-      <TranscriptionPanel
-        defaultChannel={activeChannel}
-        job={transcriptionJob}
-        isStarting={isTranscriptionStarting}
-        error={transcriptionError}
-        onStart={handleStartTranscription}
-      />
-    </main>
+            <TranscriptionPanel
+              defaultChannel={activeChannel}
+              job={transcriptionJob}
+              isStarting={isTranscriptionStarting}
+              error={transcriptionError}
+              onStart={handleStartTranscription}
+            />
+          </div>
+        )}
+      </main>
+    </div>
   );
 }

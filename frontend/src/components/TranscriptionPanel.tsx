@@ -40,18 +40,18 @@ export function TranscriptionPanel({
   const canStart = cleanChannel.length > 0 && !isStarting;
 
   return (
-    <section className="panel transcription-panel">
-      <div className="panel-heading transcription-heading">
-        <div>
-          <h2>Streamer Audio</h2>
-          <span>{job ? `${job.channel_login} · ${job.status}` : 'Timed live transcription'}</span>
+    <section className="card transcription-panel">
+      <div className="card-heading transcription-heading">
+        <div className="card-title">
+          <h2>Streamer audio</h2>
+          <span className="card-meta">{job ? `${job.channel_login} · ${job.status}` : 'Timed live transcription'}</span>
         </div>
-        <div className="summary-actions">
+        <div className="card-actions summary-actions">
           {job ? <span className="transcription-window">{formatJobWindow(job)}</span> : null}
           <button
             aria-expanded={!collapsed}
             aria-label={collapsed ? 'Expand transcription controls' : 'Collapse transcription controls'}
-            className={`button-ghost collapse-toggle${collapsed ? ' is-collapsed' : ''}`}
+            className={`btn btn-ghost btn-icon collapse-toggle${collapsed ? ' is-collapsed' : ''}`}
             onClick={() => setCollapsed((current) => !current)}
             type="button"
           >
@@ -61,7 +61,7 @@ export function TranscriptionPanel({
       </div>
       {collapsed ? null : (
         <>
-          {error ? <div className="summary-error">{error}</div> : null}
+          {error ? <div className="alert summary-error">{error}</div> : null}
           <form
             className="transcription-form"
             onSubmit={(event) => {
@@ -71,9 +71,10 @@ export function TranscriptionPanel({
               }
             }}
           >
-            <label>
+            <label className="field-label">
               <span>Channel</span>
               <input
+                className="field"
                 autoComplete="off"
                 inputMode="text"
                 pattern="[A-Za-z0-9_]+"
@@ -82,9 +83,10 @@ export function TranscriptionPanel({
                 onChange={(event) => setChannel(event.target.value)}
               />
             </label>
-            <label>
+            <label className="field-label">
               <span>Transcribe for</span>
               <select
+                className="field"
                 value={durationMinutes}
                 onChange={(event) => setDurationMinutes(Number(event.target.value))}
               >
@@ -95,7 +97,11 @@ export function TranscriptionPanel({
                 ))}
               </select>
             </label>
-            <button disabled={!canStart} type="submit">
+            <button
+              className={`btn btn-primary${isStarting ? ' is-busy' : ''}`}
+              disabled={!canStart}
+              type="submit"
+            >
               <Mic size={16} />
               {isStarting ? 'Starting' : 'Start'}
             </button>

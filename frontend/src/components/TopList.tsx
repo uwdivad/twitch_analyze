@@ -7,17 +7,21 @@ type TopListProps = {
 
 export function TopList({ title, items }: TopListProps) {
   return (
-    <div className="panel list-panel">
-      <div className="panel-heading">
+    <div className="card list-panel">
+      <div className="card-heading">
         <h2>{title}</h2>
+        {items.length > 0 ? <span className="card-meta">{items.length}</span> : null}
       </div>
       <div className="top-list">
         {items.length === 0 ? (
           <div className="empty">No data yet.</div>
         ) : (
-          items.map((item) => (
+          items.map((item, index) => (
             <div key={item.value} className="top-item">
-              <span>{item.value}</span>
+              <span className="top-rank" aria-hidden="true">
+                {index + 1}
+              </span>
+              <span className="top-value">{item.value}</span>
               <strong>{item.count.toLocaleString()}</strong>
             </div>
           ))

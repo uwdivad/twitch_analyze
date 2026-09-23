@@ -1,8 +1,10 @@
 import React from 'react';
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
+import { useThemeColors } from '../hooks/useThemeColors';
 import type { ChannelInfo, ChannelVolumeSeries } from '../types';
 import { formatMinuteTime } from '../utils/format';
+import { ChartTooltip } from './ui/ChartTooltip';
 
 type ChannelVolumeChartsProps = {
   channels: ChannelInfo[];
@@ -11,6 +13,8 @@ type ChannelVolumeChartsProps = {
 };
 
 export function ChannelVolumeCharts({ channels, channelVolumes, windowLabel }: ChannelVolumeChartsProps) {
+  const colors = useThemeColors();
+  const idPrefix = React.useId();
   const channelChartData = React.useMemo(
     () =>
       channels
@@ -39,20 +43,21 @@ export function ChannelVolumeCharts({ channels, channelVolumes, windowLabel }: C
   return (
     <section className="channel-charts">
       <div className="section-heading">
-        <h2>Channel Volume</h2>
-        <span>last {windowLabel}</span>
+        <h2>Channel volume</h2>
+        <span>messages per minute · last {windowLabel}</span>
       </div>
       <div className="channel-chart-grid">
         {channelChartData.map(({ channel, chartData, latestRate, peakRate }) => {
+          const name = channel.channel_display_name || channel.channel_login;
           return (
             <article
               key={channel.channel_login}
-              className={`channel-chart-card${chartData.length === 0 ? ' is-empty' : ''}`}
+              className={`card card-sm card-interactive channel-chart-card${chartData.length === 0 ? ' is-empty' : ''}`}
             >
               <div className="channel-chart-heading">
-                <strong>{channel.channel_display_name || channel.channel_login}</strong>
+                <strong>{name}</strong>
                 {chartData.length > 0 ? (
-                  <span>
+                  <span className="num">
                     {latestRate}/min <em>· peak {peakRate}</em>
                   </span>
                 ) : null}
@@ -60,26 +65,35 @@ export function ChannelVolumeCharts({ channels, channelVolumes, windowLabel }: C
               {chartData.length === 0 ? (
                 <div className="channel-chart-empty">No data</div>
               ) : (
-                <ResponsiveContainer width="100%" height={120}>
-                  <LineChart data={chartData}>
-                    <XAxis dataKey="label" hide />
-                    <YAxis hide allowDecimals={false} />
-                    <Tooltip
-                      contentStyle={{ background: '#18181b', border: '1px solid #9146ff' }}
-                      labelStyle={{ color: '#adadb8' }}
-                      formatter={(value) => [value ?? 0, 'Messages']}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="message_count"
-                      stroke="#bf94ff"
-                      strokeWidth={2}
-                      dot={false}
-                      isAnimationActive={true}
-                      animationDuration={300}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+                <div className="chart-frame" aria-describedby={`${idPrefix}-${channel.channel_login}`}>
+                  <p className="sr-only" id={`${idPrefix}-${channel.channel_login}`}>
+                    {`${name}: ${latestRate} messages in the latest minute, peak ${peakRate} per minute over the last ${windowLabel}.`}
+                  </p>
+                  <ResponsiveContainer width="100%" height={96}>
+                    <LineChart data={chartData} margin={{ top: 6, right: 4, bottom: 4, left: 4 }}>
+                      <XAxis dataKey="label" hide />
+                      <YAxis hide allowDecimals={false} />
+                      <Tooltip
+                        content={<ChartTooltip seriesName="Messages" />}
+                        cursor={{ stroke: colors.borderStrong, strokeWidth: 1 }}
+                        isAnimationActive={false}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="message_count"
+                        name="Messages"
+                        stroke={colors.chart1}
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        dot={false}
+                        activeDot={{ r: 4, fill: colors.chart1, stroke: colors.surface, strokeWidth: 2 }}
+                        isAnimationActive={true}
+                        animationDuration={300}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
               )}
             </article>
           );
