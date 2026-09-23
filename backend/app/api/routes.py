@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.config import Settings, get_settings
+from app.ingestion.vod_replay import TwitchGqlClient, parse_vod_reference
 from app.models.chat import (
     ChannelInfo,
     ChatMessage,
@@ -107,9 +108,6 @@ def get_summary_service(
 
 
 def _default_parse_vod_reference(value: str) -> str:
-    # TODO(integration): WS2 provides parse_vod_reference in app.ingestion.vod_replay.
-    from app.ingestion.vod_replay import parse_vod_reference
-
     return parse_vod_reference(value)
 
 
@@ -119,10 +117,6 @@ def get_vod_reference_parser() -> Callable[[str], str]:
 
 def _gql_client_factory(settings: Settings) -> Callable[[], Any]:
     def factory() -> Any:
-        # TODO(integration): wire real TwitchGqlClient factory + app.state.kafka.
-        # Imported lazily because WS2's module is not on this branch yet.
-        from app.ingestion.vod_replay import TwitchGqlClient
-
         return TwitchGqlClient(
             url=settings.twitch_gql_url,
             client_id=settings.twitch_gql_client_id,
@@ -139,8 +133,8 @@ def get_vod_service(
     clickhouse: ClickHouseRepository = Depends(get_clickhouse),
     settings: Settings = Depends(get_settings),
 ) -> VodAnalysisService:
-    # TODO(integration): wire real TwitchGqlClient factory + app.state.kafka
-    # (app.state.kafka must expose flush(), added by WS1).
+    # The shared producer's flush() lets the service wait until every replayed
+    # comment is acknowledged by Kafka before it waits for the consumer.
     return VodAnalysisService(
         clickhouse=clickhouse,
         kafka=request.app.state.kafka,

@@ -47,7 +47,8 @@ function channelName(analysis: VodAnalysis): string {
   return analysis.channel_display_name || analysis.channel_login || 'unknown channel';
 }
 
-export function VodView() {
+// Memoized: App re-renders on every live-feed flush, and VodView takes no props.
+export const VodView = React.memo(function VodView() {
   const vod = useVodAnalysis();
   const { job, analysis, activity } = vod;
   const playerRef = React.useRef<VodPlayerHandle | null>(null);
@@ -231,7 +232,7 @@ export function VodView() {
       )}
     </section>
   );
-}
+});
 
 type RecentListProps = {
   recent: VodAnalysis[];

@@ -563,9 +563,6 @@ class ClickHouseRepository:
         ``received_at`` (VOD replays carry the original air time in ``event_ts``)
         and creates ``vod_analyses``.
         """
-        # TODO(integration): backend/app/main.py lifespan must call
-        # `await repo.ensure_vod_schema()` right after `ClickHouseRepository.connect()`
-        # (WS3 owns main.py and adds that call).
         add_source = (
             "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS "
             "source LowCardinality(String) DEFAULT 'live' AFTER received_at"

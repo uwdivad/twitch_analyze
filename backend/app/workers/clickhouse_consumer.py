@@ -60,8 +60,6 @@ class ClickHouseConsumerWorker:
         # The init SQL never re-runs on existing volumes, and this worker inserts the
         # `source` column, so every insert fails until the migration succeeds. Retry
         # with backoff and exit (container restarts us) if it never succeeds.
-        # TODO(integration): main.py's lifespan must also call ensure_vod_schema()
-        # after ClickHouseRepository.connect() (owned by WS3).
         await self._ensure_schema_with_retry()
         await self._start_consumer_with_retry()
         WORKER_KAFKA_CONNECTED.set(1)

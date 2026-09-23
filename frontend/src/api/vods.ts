@@ -9,9 +9,8 @@ function vodPath(videoId: string): string {
   return `/api/vods/${encodeURIComponent(videoId)}`;
 }
 
-// TODO(integration): postJson does not attach an X-API-Key header today. If
-// API_AUTH_TOKEN is set on the backend, these POSTs are rejected exactly like
-// the existing summary/transcription POSTs until client.ts learns to send it.
+// Note: X-API-Key is not sent by the client; this matches the summary and
+// transcription POSTs. `require_api_key` is a no-op unless API_AUTH_TOKEN is set.
 export async function analyzeVod(video: string, force = false): Promise<VodAnalysisResponse> {
   return postJson<VodAnalysisResponse>('/api/vods/analyze', { video, force });
 }

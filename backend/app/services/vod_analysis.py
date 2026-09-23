@@ -30,6 +30,7 @@ from openai import OpenAI
 
 from app.core.config import Settings
 from app.core.metrics import CHAT_MESSAGES_INGESTED
+from app.ingestion.vod_replay import normalize_comment
 from app.models.chat import ChatMessage, TopItem
 from app.models.vod import VodAnalysis, VodAnalysisJob, VodMetadata, VodPeak
 
@@ -292,9 +293,6 @@ class VodNoPeaksError(Exception):
 
 
 def _default_normalize(node: dict, video: VodMetadata) -> ChatMessage | None:
-    # TODO(integration): WS2 provides normalize_comment in app.ingestion.vod_replay.
-    from app.ingestion.vod_replay import normalize_comment
-
     return normalize_comment(node, video)
 
 
