@@ -212,8 +212,8 @@
   margin: 0 calc(var(--space-2) * -1);
 }
 
-.chart-frame .recharts-surface:focus,
-.chart-frame .recharts-wrapper:focus {
+.chart-frame .recharts-surface:focus:not(:focus-visible),
+.chart-frame .recharts-wrapper:focus:not(:focus-visible) {
   outline: none;
 }
 

@@ -52,6 +52,7 @@ function fillAndClip(volume: VolumePoint[], windowMinutes: number): VolumePoint[
 
 export function VolumeChart({ volume, windowLabel, windowMinutes }: VolumeChartProps) {
   const colors = useThemeColors();
+  const summaryId = React.useId();
   const chartData = React.useMemo(
     () =>
       fillAndClip(volume, windowMinutes).map((point) => ({
@@ -89,7 +90,10 @@ export function VolumeChart({ volume, windowLabel, windowMinutes }: VolumeChartP
       {volume.length === 0 ? (
         <div className="chart-empty">No analytics data yet. Live messages will update this chart immediately.</div>
       ) : (
-        <div className="chart-frame" role="img" aria-label={chartSummary}>
+        <div className="chart-frame" aria-describedby={summaryId}>
+          <p className="sr-only" id={summaryId}>
+            {chartSummary}
+          </p>
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
               <CartesianGrid stroke={colors.border} strokeWidth={1} vertical={false} />

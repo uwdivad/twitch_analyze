@@ -14,6 +14,7 @@ type ChannelVolumeChartsProps = {
 
 export function ChannelVolumeCharts({ channels, channelVolumes, windowLabel }: ChannelVolumeChartsProps) {
   const colors = useThemeColors();
+  const idPrefix = React.useId();
   const channelChartData = React.useMemo(
     () =>
       channels
@@ -64,11 +65,10 @@ export function ChannelVolumeCharts({ channels, channelVolumes, windowLabel }: C
               {chartData.length === 0 ? (
                 <div className="channel-chart-empty">No data</div>
               ) : (
-                <div
-                  className="chart-frame"
-                  role="img"
-                  aria-label={`${name}: ${latestRate} messages in the latest minute, peak ${peakRate} per minute over the last ${windowLabel}.`}
-                >
+                <div className="chart-frame" aria-describedby={`${idPrefix}-${channel.channel_login}`}>
+                  <p className="sr-only" id={`${idPrefix}-${channel.channel_login}`}>
+                    {`${name}: ${latestRate} messages in the latest minute, peak ${peakRate} per minute over the last ${windowLabel}.`}
+                  </p>
                   <ResponsiveContainer width="100%" height={96}>
                     <LineChart data={chartData} margin={{ top: 6, right: 4, bottom: 4, left: 4 }}>
                       <XAxis dataKey="label" hide />

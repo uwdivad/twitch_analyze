@@ -41,7 +41,11 @@ export function Topbar({ socketState, view, onViewChange, theme, onToggleTheme }
         </nav>
 
         <div className="topbar-actions">
-          <span className={`pill live-state ${socketState}`} role="status" title="Live feed connection">
+          <span
+            aria-label={`Live feed connection: ${socketState}`}
+            className={`pill live-state ${socketState}`}
+            title="Live feed connection"
+          >
             <span className={`dot is-${socketState}`} aria-hidden="true" />
             <span>{socketState}</span>
           </span>
