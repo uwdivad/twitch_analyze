@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from app.core import runtime_settings
 from app.core.config import Settings, get_settings
@@ -44,6 +44,7 @@ from app.services.vod_analysis import (
     VodNotFoundError,
     vod_session_id,
 )
+from app.services.vod_export import VodExportFormat, build_vod_export, export_filename, vod_peaks_csv
 from app.storage.clickhouse import ClickHouseRepository
 from app.storage.realtime import RealtimeHub
 from app.workers.audio_capture import AudioCaptureWorker
@@ -386,35 +387,69 @@ async def vod_analysis(
     return VodAnalysisResponse(job=job, analysis=analysis)
 
 
-@router.get("/api/vods/{video_id}/activity", response_model=VodActivity)
-async def vod_activity(
-    video_id: str,
-    bucket_seconds: int | None = Query(default=None, ge=1, le=3600),
-    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
-) -> VodActivity:
+async def _load_vod_analysis_or_404(clickhouse: ClickHouseRepository, video_id: str, what: str) -> VodAnalysis:
     try:
         analysis = await clickhouse.get_vod_analysis(video_id)
     except Exception as exc:
         logger.exception("Failed to load VOD analysis %s from ClickHouse", video_id)
-        raise HTTPException(status_code=503, detail="VOD activity is temporarily unavailable") from exc
+        raise HTTPException(status_code=503, detail=f"{what} is temporarily unavailable") from exc
     if analysis is None:
         raise HTTPException(status_code=404, detail="VOD analysis not found")
+    return analysis
 
+
+async def _load_vod_activity(
+    clickhouse: ClickHouseRepository, analysis: VodAnalysis, bucket_seconds: int | None
+) -> VodActivity:
     duration = max(analysis.duration_seconds, 0)
     bucket = bucket_seconds or analysis.bucket_seconds or 60
     # Keep caller-chosen buckets from producing an unbounded response.
     bucket = max(bucket, math.ceil(duration / MAX_VOD_ACTIVITY_BUCKETS), 1)
     try:
         buckets = await clickhouse.vod_activity(
-            session_id=vod_session_id(video_id),
+            session_id=vod_session_id(analysis.video_id),
             created_at=analysis.video_created_at,
             duration_seconds=duration,
             bucket_seconds=bucket,
         )
     except Exception:
-        logger.exception("Failed to load VOD activity for %s from ClickHouse", video_id)
+        logger.exception("Failed to load VOD activity for %s from ClickHouse", analysis.video_id)
         buckets = []
-    return VodActivity(video_id=video_id, bucket_seconds=bucket, duration_seconds=duration, buckets=buckets)
+    return VodActivity(video_id=analysis.video_id, bucket_seconds=bucket, duration_seconds=duration, buckets=buckets)
+
+
+@router.get("/api/vods/{video_id}/activity", response_model=VodActivity)
+async def vod_activity(
+    video_id: str,
+    bucket_seconds: int | None = Query(default=None, ge=1, le=3600),
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+) -> VodActivity:
+    analysis = await _load_vod_analysis_or_404(clickhouse, video_id, "VOD activity")
+    return await _load_vod_activity(clickhouse, analysis, bucket_seconds)
+
+
+@router.get("/api/vods/{video_id}/export")
+async def export_vod(
+    video_id: str,
+    format: VodExportFormat = Query(default="json"),
+    bucket_seconds: int | None = Query(default=None, ge=1, le=3600),
+    clickhouse: ClickHouseRepository = Depends(get_clickhouse),
+) -> Response:
+    """Download a stored analysis as a JSON bundle (analysis + activity) or a peaks CSV."""
+    analysis = await _load_vod_analysis_or_404(clickhouse, video_id, "VOD export")
+    if format == "csv":
+        content = vod_peaks_csv(analysis)
+        media_type = "text/csv; charset=utf-8"
+    else:
+        activity = await _load_vod_activity(clickhouse, analysis, bucket_seconds)
+        content = build_vod_export(analysis, activity).model_dump_json(indent=2)
+        media_type = "application/json"
+    filename = export_filename(analysis, format)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post(
