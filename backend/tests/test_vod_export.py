@@ -2,6 +2,8 @@ import csv
 import io
 from datetime import UTC, datetime
 
+import pytest
+
 from app.models.chat import TopItem
 from app.models.vod import VodActivity, VodActivityBucket, VodAnalysis, VodPeak
 from app.services.vod_export import (
@@ -74,11 +76,29 @@ def test_vod_peaks_csv_rows() -> None:
     assert len(rows) == 2
 
 
-def test_vod_peaks_csv_neutralizes_formula_cells() -> None:
+@pytest.mark.parametrize("prefix", ["=", "+", "-", "@"])
+@pytest.mark.parametrize(
+    ("field", "update", "column"),
+    [
+        ("label", lambda value: value, "label"),
+        ("title", lambda value: value, "title"),
+        ("sample_messages", lambda value: [value], "sample_messages"),
+        ("top_emotes", lambda value: [TopItem(value=value, count=1)], "top_emotes"),
+        ("top_tokens", lambda value: [TopItem(value=value, count=1)], "top_tokens"),
+    ],
+)
+def test_vod_peaks_csv_neutralizes_formula_cells(prefix, field, update, column) -> None:
     analysis = _analysis()
-    analysis.peaks[0].label = "=cmd()"
+    setattr(analysis.peaks[0], field, update(f"{prefix}cmd()"))
     rows = list(csv.reader(io.StringIO(vod_peaks_csv(analysis))))
-    assert dict(zip(rows[0], rows[1]))["label"] == "'=cmd()"
+    assert dict(zip(rows[0], rows[1]))[column].startswith(f"'{prefix}cmd()")
+
+
+def test_vod_peaks_csv_leaves_ordinary_text_alone() -> None:
+    rows = list(csv.reader(io.StringIO(vod_peaks_csv(_analysis()))))
+    row = dict(zip(rows[0], rows[1]))
+    assert row["label"] == "KEKW spike"
+    assert row["title"] == "Chat loses it"
 
 
 def test_vod_peaks_csv_without_peaks_has_header_only() -> None:
