@@ -194,6 +194,25 @@ async def test_summary_context_queries_exclude_vod_chat() -> None:
         assert params["source"] == "live"
 
 
+
+@pytest.mark.anyio
+async def test_summary_context_window_uses_epoch_ms_params() -> None:
+    # Datetime params are rendered in the ClickHouse server timezone, which shifted the
+    # window by the UTC offset on a non-UTC server; the window must be sent as UTC epoch ms.
+    stats_row = ("channel-1", "example", "Example", "channel-1:2026-04-28", 5, 2)
+    client = FakeClickHouseClient(query_results=[[stats_row], [], [], [], []])
+    repo = _repo(client)
+    before_ms = int(datetime.now(UTC).timestamp() * 1000)
+
+    await repo.summary_context(channel="example", window_minutes=10, max_messages=10)
+
+    after_ms = int(datetime.now(UTC).timestamp() * 1000)
+    for query, params in client.queries:
+        assert "toUnixTimestamp64Milli(event_ts) >= %(window_start_ms)s" in query
+        assert not any(isinstance(value, datetime) for value in params.values())
+        assert params["window_end_ms"] - params["window_start_ms"] == 10 * 60 * 1000
+        assert before_ms - 1 <= params["window_end_ms"] <= after_ms + 1
+
 def test_vod_analysis_row_round_trip_preserves_peaks() -> None:
     repo = _repo(FakeClickHouseClient())
     analysis = _analysis()
