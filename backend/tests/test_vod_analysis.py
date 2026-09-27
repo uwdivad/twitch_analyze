@@ -704,3 +704,224 @@ async def test_label_skips_write_when_reanalyzed_meanwhile(monkeypatch) -> None:
 
     assert clickhouse.upserted == []
     assert result == newer
+
+
+# ---------------------------------------------------------------------------
+# detect_peaks edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_detect_peaks_min_gap_merges_spikes_60s_apart() -> None:
+    counts = [10] * 300
+    counts[100] = 60
+    counts[106] = 50  # 60 s later at 10 s buckets; default min gap is 90 s
+
+    peaks = detect_peaks(counts, 10)
+    ungapped = detect_peaks(counts, 10, min_gap_seconds=0)
+
+    assert [peak.index for peak in peaks] == [100]
+    assert peaks[0].peak_count == 60
+    # Sanity check: the second spike is a real peak on its own.
+    assert [peak.index for peak in ungapped] == [100, 106]
+
+
+def overlapping_counts() -> list[int]:
+    # Two bursts 100 s apart on a shared elevated plateau: each extent would spill
+    # into the neighbour's, so extents must be clamped.
+    counts = [10] * 300
+    for index in range(95, 125):
+        counts[index] = 30
+    counts[100] = 80
+    counts[110] = 80
+    return counts
+
+
+def test_detect_peaks_clamps_overlapping_extents() -> None:
+    peaks = detect_peaks(overlapping_counts(), 10)
+
+    assert len(peaks) == 2
+    first, second = peaks
+    assert first.end_index <= second.start_index
+    for peak in peaks:
+        assert peak.start_index <= peak.index < peak.end_index
+
+
+def test_detect_peaks_overlapping_extents_keep_each_burst_in_its_own_peak() -> None:
+    # The first peak's extent must not swallow the second peak's burst bucket, or the
+    # second peak points at the plateau next to its burst instead of the burst itself.
+    peaks = detect_peaks(overlapping_counts(), 10)
+
+    assert [(peak.index, peak.peak_count) for peak in peaks] == [(100, 80), (110, 80)]
+
+
+def test_detect_peaks_spikes_at_first_and_last_bucket() -> None:
+    counts = [10] * 300
+    counts[0] = 80
+    counts[-1] = 80
+
+    peaks = detect_peaks(counts, 10)
+
+    assert [peak.index for peak in peaks] == [0, 299]
+    assert peaks[0].start_index == 0
+    assert peaks[1].end_index == 300
+    assert all(peak.peak_count == 80 for peak in peaks)
+
+
+# ---------------------------------------------------------------------------
+# VodAnalysisService edge cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_run_clamps_peak_in_last_partial_bucket_to_duration() -> None:
+    duration = 3001  # 601 five-second buckets; the last one covers only 1 s
+    counts = [10] * 601
+    counts[600] = 90
+    gql = FakeGql(pages_of(3), video=metadata(duration_seconds=duration))
+    kafka = FakeKafka()
+    clickhouse = FakeClickHouse(kafka, counts=counts)
+    jobs = RecordingJobs()
+
+    await build_service(gql, kafka, clickhouse, jobs).run("123456")
+
+    assert jobs["123456"].status == "completed"
+    analysis = clickhouse.upserted[-1]
+    last = analysis.peaks[-1]
+    assert last.peak_seconds == 3000
+    assert last.start_seconds < last.end_seconds <= duration
+    assert last.end_seconds == duration
+    # The per-peak ClickHouse window is clamped too.
+    assert clickhouse.context_calls[len(analysis.peaks) - 1]["window_end"] == CREATED_AT + timedelta(seconds=duration)
+
+
+@pytest.mark.anyio
+async def test_run_accepts_stable_count_exactly_at_accept_ratio() -> None:
+    from app.services.vod_analysis import STABLE_ACCEPT_RATIO
+
+    assert STABLE_ACCEPT_RATIO == 0.98
+    gql = FakeGql(pages_of(100))
+    kafka = FakeKafka()
+    clickhouse = FakeClickHouse(kafka, stored=98)  # 98 / 100 == ratio
+    jobs = RecordingJobs()
+
+    await build_service(gql, kafka, clickhouse, jobs, vod_catchup_stable_polls=2).run("123456")
+
+    assert jobs["123456"].status == "completed"
+    assert jobs["123456"].stored_comments == 98
+    assert clickhouse.count_calls == 3
+
+
+@pytest.mark.anyio
+async def test_run_rejects_stable_count_just_below_accept_ratio() -> None:
+    gql = FakeGql(pages_of(100))
+    kafka = FakeKafka()
+    clickhouse = FakeClickHouse(kafka, stored=97)  # 97 / 100 < 0.98
+    jobs = RecordingJobs()
+
+    await build_service(
+        gql,
+        kafka,
+        clickhouse,
+        jobs,
+        vod_catchup_stable_polls=2,
+        vod_catchup_poll_seconds=1.0,
+        vod_catchup_timeout_seconds=5.0,
+    ).run("123456")
+
+    assert jobs["123456"].status == "failed"
+    assert jobs["123456"].error == f"{CATCHUP_ERROR_PREFIX} (stored 97 of 100)"
+    assert clickhouse.count_calls == 6
+
+
+@pytest.mark.anyio
+async def test_run_cancellation_marks_job_cancelled_and_propagates() -> None:
+    import asyncio
+
+    gql = FakeGql(pages_of(3))
+    kafka = FakeKafka()
+    clickhouse = FakeClickHouse(kafka, stored=0)
+    jobs = RecordingJobs()
+    waiting = asyncio.Event()
+
+    async def blocking_sleep(_seconds: float) -> None:
+        waiting.set()
+        await asyncio.Event().wait()
+
+    service = VodAnalysisService(
+        clickhouse=clickhouse,
+        kafka=kafka,
+        gql_factory=lambda: gql,
+        settings=service_settings(),
+        jobs=jobs,
+        normalize=fake_normalize,
+        sleep=blocking_sleep,
+    )
+    task = asyncio.create_task(service.run("123456"))
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    job = jobs["123456"]
+    assert job.status == "failed"
+    assert job.error == "Cancelled"
+    assert job.detail == "Job cancelled"
+    assert clickhouse.upserted == []
+
+
+@pytest.mark.anyio
+async def test_run_survives_clickhouse_error_while_recording_failure() -> None:
+    class UpsertFailingClickHouse(FakeClickHouse):
+        async def upsert_vod_analysis(self, analysis: VodAnalysis) -> None:
+            raise RuntimeError("clickhouse down")
+
+    gql = FakeGql(pages_of(2))
+    kafka = FakeKafka()
+    clickhouse = UpsertFailingClickHouse(kafka)
+    clickhouse.fail_activity = True
+    jobs = RecordingJobs()
+
+    await build_service(gql, kafka, clickhouse, jobs).run("123456")  # must not raise
+
+    assert jobs["123456"].status == "failed"
+    assert jobs["123456"].error == "RuntimeError"
+
+
+@pytest.mark.anyio
+async def test_run_records_failure_when_existing_analysis_lookup_fails() -> None:
+    class LookupFailingClickHouse(FakeClickHouse):
+        async def get_vod_analysis(self, video_id: str) -> VodAnalysis | None:
+            raise RuntimeError("clickhouse down")
+
+    gql = FakeGql(pages_of(2))
+    kafka = FakeKafka()
+    clickhouse = LookupFailingClickHouse(kafka)
+    clickhouse.fail_activity = True
+    jobs = RecordingJobs()
+
+    await build_service(gql, kafka, clickhouse, jobs).run("123456")
+
+    # An unknown existing state is treated as "no completed analysis": the failed row is stored.
+    assert jobs["123456"].status == "failed"
+    assert [row.status for row in clickhouse.upserted] == ["failed"]
+
+
+@pytest.mark.anyio
+async def test_run_skip_fetch_falls_back_to_stored_count_when_lookup_fails() -> None:
+    class LookupFailingClickHouse(FakeClickHouse):
+        async def get_vod_analysis(self, video_id: str) -> VodAnalysis | None:
+            raise RuntimeError("clickhouse down")
+
+    gql = FakeGql(pages_of(5))
+    kafka = FakeKafka()
+    clickhouse = LookupFailingClickHouse(kafka, stored=4200)
+    jobs = RecordingJobs()
+
+    await build_service(gql, kafka, clickhouse, jobs).run("123456", skip_fetch=True)
+
+    # No recorded expected count: accept whatever is stored after a single poll.
+    assert kafka.published == []
+    assert jobs["123456"].status == "completed"
+    assert jobs["123456"].stored_comments == 4200
+    assert clickhouse.count_calls == 1

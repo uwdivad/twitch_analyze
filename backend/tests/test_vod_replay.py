@@ -578,3 +578,106 @@ async def test_transport_errors_are_retried(no_sleep: list[float], error: Except
     assert attempts == 2
     assert [[node["id"] for node in page] for page in pages] == [["a"]]
     assert no_sleep == [1]
+
+
+# ---------------------------------------------------------------------------
+# Default aiohttp transport (no injected fetch_json)
+# ---------------------------------------------------------------------------
+
+
+def _video_body() -> str:
+    return json.dumps(
+        {
+            "data": {
+                "video": {
+                    "id": "987",
+                    "title": "T",
+                    "lengthSeconds": 10,
+                    "createdAt": "2024-01-01T00:00:00Z",
+                    "owner": {"id": "42", "login": "s", "displayName": "S"},
+                }
+            }
+        }
+    )
+
+
+@pytest.mark.anyio
+async def test_real_transport_retries_http_503_then_succeeds(no_sleep: list[float]) -> None:
+    session = _FakeSession([_FakeResponse(503, "upstream unavailable"), _FakeResponse(200, _video_body())])
+    client = TwitchGqlClient(url="https://gql.example/gql", client_id="cid", comments_query_hash=HASH)
+    client._session = session  # type: ignore[assignment]
+
+    video = await client.fetch_video("987")
+
+    assert video.video_id == "987"
+    assert len(session.posts) == 2
+    assert session.posts[0] == session.posts[1]
+    assert session.posts[0]["variables"] == {"id": "987"}
+    assert no_sleep == [1]
+
+
+@pytest.mark.anyio
+async def test_real_transport_http_400_is_fatal(no_sleep: list[float]) -> None:
+    session = _FakeSession([_FakeResponse(400, "bad request"), _FakeResponse(200, _video_body())])
+    client = TwitchGqlClient(url="https://gql.example/gql", client_id="cid", comments_query_hash=HASH)
+    client._session = session  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="Twitch GQL request failed: 400 bad request") as caught:
+        await client.fetch_video("987")
+
+    # The transport raises GqlHttpError; _post wraps it as a non-retryable RuntimeError.
+    assert isinstance(caught.value.__cause__, GqlHttpError)
+    assert caught.value.__cause__.status == 400
+    assert len(session.posts) == 1
+    assert no_sleep == []
+
+
+@pytest.mark.anyio
+async def test_aenter_builds_session_with_client_id_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[Any] = []
+
+    class RecordingClientSession:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.closed = False
+            created.append(self)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(vod_replay.aiohttp, "ClientSession", RecordingClientSession)
+    client = TwitchGqlClient(url="https://gql.example/gql", client_id="web-client-id", comments_query_hash=HASH)
+
+    async with client as entered:
+        assert entered is client
+        assert len(created) == 1
+        session = created[0]
+        assert client._session is session
+        assert session.kwargs["headers"]["Client-Id"] == "web-client-id"
+        assert session.kwargs["headers"]["Content-Type"] == "application/json"
+        assert session.kwargs["timeout"].total == vod_replay.REQUEST_TIMEOUT_SECONDS
+
+    assert session.closed is True
+    assert client._session is None
+
+
+@pytest.mark.anyio
+async def test_aenter_skips_session_when_fetch_is_injected(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[Any] = []
+    monkeypatch.setattr(vod_replay.aiohttp, "ClientSession", lambda **kwargs: created.append(kwargs))
+
+    async def fetch_json(body: Any) -> Any:
+        return {}
+
+    async with make_client(fetch_json) as client:
+        assert client._session is None
+
+    assert created == []
+
+
+@pytest.mark.anyio
+async def test_real_transport_requires_context_manager() -> None:
+    client = TwitchGqlClient(url="https://gql.example/gql", client_id="cid", comments_query_hash=HASH)
+
+    with pytest.raises(RuntimeError, match="async context manager"):
+        await client.fetch_video("987")
