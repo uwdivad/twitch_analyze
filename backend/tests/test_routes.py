@@ -63,7 +63,7 @@ class InsertSummaryClickHouse:
 class SummaryClickHouse:
     async def recent_summaries(self, **kwargs):
         assert kwargs == {"channel": "example", "limit": 5}
-        return ["summary"]
+        return [chat_summary()]
 
 
 class SummaryContextClickHouse:
@@ -76,13 +76,17 @@ class SummaryContextClickHouse:
         return self.context
 
 
-class FailingSummaryService:
-    async def generate(self, **_kwargs):
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+class EmptyClickHouse:
+    async def recent_messages(self, **kwargs):
+        return []
 
 
 class FakeHub:
+    def __init__(self):
+        self.calls = []
+
     def recent(self, channel=None, limit=100):
+        self.calls.append({"channel": channel, "limit": limit})
         return [
             ChatMessage(
                 message_id="message-1",
@@ -148,16 +152,43 @@ def summary_context_payload() -> SummaryContext:
 
 @pytest.mark.anyio
 async def test_recent_messages_falls_back_to_hub_when_clickhouse_fails() -> None:
-    messages = await recent_messages(
-        channel="example",
-        session_id=None,
-        limit=150,
-        clickhouse=FailingClickHouse(),
-        hub=FakeHub(),
-    )
+    # Both a ClickHouse error and an empty ClickHouse result fall back to the live buffer.
+    for clickhouse in (FailingClickHouse(), EmptyClickHouse()):
+        hub = FakeHub()
+        messages = await recent_messages(
+            channel="example",
+            session_id=None,
+            limit=150,
+            clickhouse=clickhouse,
+            hub=hub,
+        )
 
-    assert len(messages) == 1
-    assert messages[0].message_text == "hello"
+        assert hub.calls == [{"channel": "example", "limit": 150}]
+        assert len(messages) == 1
+        assert messages[0].message_text == "hello"
+        assert messages[0].channel_login == "example"
+
+
+@pytest.mark.anyio
+async def test_recent_messages_prefers_clickhouse_rows_over_hub() -> None:
+    stored = chat_message()
+
+    class RowsClickHouse:
+        def __init__(self):
+            self.kwargs = None
+
+        async def recent_messages(self, **kwargs):
+            self.kwargs = kwargs
+            return [stored]
+
+    clickhouse = RowsClickHouse()
+    hub = FakeHub()
+
+    messages = await recent_messages(channel="example", session_id="s-1", limit=20, clickhouse=clickhouse, hub=hub)
+
+    assert messages == [stored]
+    assert clickhouse.kwargs == {"channel": "example", "session_id": "s-1", "limit": 20}
+    assert hub.calls == []
 
 
 @pytest.mark.anyio
@@ -197,7 +228,7 @@ async def test_message_total_returns_zero_when_clickhouse_fails() -> None:
 async def test_summaries_returns_clickhouse_rows() -> None:
     result = await summaries(channel="example", limit=5, clickhouse=SummaryClickHouse())
 
-    assert result == ["summary"]
+    assert result == [chat_summary()]
 
 
 @pytest.mark.anyio
@@ -240,14 +271,21 @@ async def test_insert_summary_returns_inserted_count() -> None:
 @pytest.mark.anyio
 async def test_generate_summary_returns_503_when_openai_is_missing() -> None:
     from app.models.chat import GenerateSummaryRequest
+    from app.services.summaries import SummaryService
+
+    # The real service with no key; ClickHouse must not even be queried.
+    clickhouse = SummaryContextClickHouse(summary_context_payload())
+    service = SummaryService(clickhouse=clickhouse, api_key="", model="test-model", max_messages=25)
 
     with pytest.raises(HTTPException) as exc:
         await generate_summary(
             request=GenerateSummaryRequest(channel="example", window_minutes=60),
-            service=FailingSummaryService(),
+            service=service,
         )
 
     assert exc.value.status_code == 503
+    assert exc.value.detail == "OPENAI_API_KEY is not configured"
+    assert clickhouse.kwargs is None
 
 
 @pytest.mark.anyio
@@ -584,6 +622,22 @@ async def test_analyze_vod_returns_429_at_cap() -> None:
 
     assert exc.value.status_code == 429
     assert "123456" not in request.app.state.vod_jobs
+
+
+@pytest.mark.anyio
+async def test_analyze_vod_finished_jobs_do_not_count_toward_cap() -> None:
+    from app.models.vod import AnalyzeVodRequest
+
+    request = _vod_request(jobs={"1": _vod_job("1", status="completed"), "2": _vod_job("2", status="failed")})
+    service = FakeVodService()
+
+    result = await _analyze(request, AnalyzeVodRequest(video="123456"), VodClickHouse(), service, vod_max_concurrent_jobs=1)
+    await request.app.state.vod_tasks["123456"]
+
+    assert result.job is not None
+    assert result.job.video_id == "123456"
+    assert result.job.status == "queued"
+    assert service.calls == [("123456", False)]
 
 
 @pytest.mark.anyio

@@ -65,13 +65,16 @@ def test_chat_message_from_record_skips_invalid_payload() -> None:
     assert chat_message_from_record(record) is None
 
 
+
+
 class FakeRepo:
-    def __init__(self, schema_failures: int = 0, insert_failures: int = 0) -> None:
+    def __init__(self, events: list[str], schema_failures: int = 0, insert_failures: int = 0) -> None:
+        self.events = events
         self.schema_failures = schema_failures
         self.insert_failures = insert_failures
         self.schema_calls = 0
         self.insert_calls = 0
-        self.events: list[str] = []
+        self.inserted_batches: list[list[str]] = []
 
     async def ensure_vod_schema(self) -> None:
         self.schema_calls += 1
@@ -83,33 +86,61 @@ class FakeRepo:
     async def insert_messages(self, messages: list[Any]) -> None:
         self.insert_calls += 1
         self.events.append("insert")
+        self.inserted_batches.append([message.message_id for message in messages])
         if self.insert_failures > 0:
             self.insert_failures -= 1
             raise RuntimeError("no such column: source")
 
 
 class FakeConsumer:
-    def __init__(self, worker: ClickHouseConsumerWorker, records: list[Any]) -> None:
+    """Hands out one queued batch per getmany() call.
+
+    The worker is stopped on the first successful commit, or once the queued batches
+    run out, so every test terminates instead of hanging. With ``repeat`` the last batch
+    is returned on every call (never drained).
+    """
+
+    def __init__(
+        self,
+        worker: ClickHouseConsumerWorker,
+        events: list[str],
+        batches: list[list[Any]],
+        repeat: bool = False,
+        commit_failures: int = 0,
+    ) -> None:
         self._worker = worker
-        self._records = records
-        self.commits = 0
+        self._events = events
+        self._batches = list(batches)
+        self._repeat = repeat
+        self._commit_failures = commit_failures
+        self.getmany_calls = 0
 
     async def start(self) -> None:
         return None
 
     async def stop(self) -> None:
-        return None
+        self._events.append("stop")
 
     async def getmany(self, timeout_ms: int, max_records: int) -> dict[str, list[Any]]:
-        records, self._records = self._records, []
+        # Yield to the loop like the real consumer, so a busy-looping worker can
+        # still be cancelled by wait_for instead of hanging the suite.
+        await asyncio.sleep(0)
+        self.getmany_calls += 1
+        if not self._batches:
+            self._worker.stop()
+            return {}
+        records = self._batches[0] if self._repeat else self._batches.pop(0)
         return {"tp": records} if records else {}
 
     async def commit(self) -> None:
-        self.commits += 1
+        self._events.append("commit")
+        if self._commit_failures > 0:
+            self._commit_failures -= 1
+            raise RuntimeError("CommitFailedError: rebalance in progress")
         self._worker.stop()
 
 
-def _bare_worker(repo: FakeRepo | None = None) -> ClickHouseConsumerWorker:
+def _bare_worker(repo: FakeRepo | None = None, flush_interval_seconds: float = 0.0) -> ClickHouseConsumerWorker:
     worker = ClickHouseConsumerWorker.__new__(ClickHouseConsumerWorker)
     worker._settings = SimpleNamespace(
         clickhouse_host="localhost",
@@ -119,10 +150,17 @@ def _bare_worker(repo: FakeRepo | None = None) -> ClickHouseConsumerWorker:
         clickhouse_database="twitch_analyze",
     )
     worker._batch_size = 10
-    worker._flush_interval_seconds = 0.0
+    worker._flush_interval_seconds = flush_interval_seconds
     worker._stop = asyncio.Event()
     worker._repo = repo
     return worker
+
+
+def _patch_connect(monkeypatch: pytest.MonkeyPatch, repo: FakeRepo) -> None:
+    async def fake_connect(cls: Any, **kwargs: Any) -> FakeRepo:
+        return repo
+
+    monkeypatch.setattr(clickhouse_consumer.ClickHouseRepository, "connect", classmethod(fake_connect))
 
 
 def _record(offset: int) -> SimpleNamespace:
@@ -142,9 +180,13 @@ def _record(offset: int) -> SimpleNamespace:
     return SimpleNamespace(topic="twitch.chat.messages", partition=0, offset=offset, value=dumps(payload).encode())
 
 
+def _invalid_record(offset: int) -> SimpleNamespace:
+    return SimpleNamespace(topic="twitch.chat.messages", partition=0, offset=offset, value=b'{"message_id":"bad"}')
+
+
 @pytest.mark.anyio
 async def test_ensure_schema_with_retry_recovers_after_failures() -> None:
-    repo = FakeRepo(schema_failures=2)
+    repo = FakeRepo([], schema_failures=2)
     worker = _bare_worker(repo)
 
     await worker._ensure_schema_with_retry(attempts=5, delay_seconds=0)
@@ -154,7 +196,7 @@ async def test_ensure_schema_with_retry_recovers_after_failures() -> None:
 
 @pytest.mark.anyio
 async def test_ensure_schema_with_retry_raises_after_last_attempt() -> None:
-    repo = FakeRepo(schema_failures=10)
+    repo = FakeRepo([], schema_failures=10)
     worker = _bare_worker(repo)
 
     with pytest.raises(RuntimeError, match="schema unavailable"):
@@ -165,42 +207,117 @@ async def test_ensure_schema_with_retry_raises_after_last_attempt() -> None:
 
 @pytest.mark.anyio
 async def test_run_reapplies_schema_before_retrying_failed_insert(monkeypatch: pytest.MonkeyPatch) -> None:
-    repo = FakeRepo(insert_failures=1)
+    events: list[str] = []
+    repo = FakeRepo(events, insert_failures=1)
     worker = _bare_worker()
-    consumer = FakeConsumer(worker, [_record(1)])
-    worker._consumer = consumer
-
-    async def fake_connect(cls: Any, **kwargs: Any) -> FakeRepo:
-        return repo
-
-    monkeypatch.setattr(clickhouse_consumer.ClickHouseRepository, "connect", classmethod(fake_connect))
+    worker._consumer = FakeConsumer(worker, events, [[_record(1)]])
+    _patch_connect(monkeypatch, repo)
 
     await asyncio.wait_for(worker.run(), timeout=5)
 
-    # startup migration, failed insert, best-effort migration, successful insert
-    assert repo.events == ["schema", "insert", "schema", "insert"]
-    assert consumer.commits == 1
+    # startup migration, failed insert (no commit), best-effort migration, successful
+    # insert, then the offsets are committed, and finally the consumer is stopped.
+    assert events == ["schema", "insert", "schema", "insert", "commit", "stop"]
+    assert repo.inserted_batches == [["message-1"], ["message-1"]]
+
+
+@pytest.mark.anyio
+async def test_run_does_not_fetch_while_insert_retry_is_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    repo = FakeRepo(events, insert_failures=3)
+    worker = _bare_worker()
+    # Kafka always has more records available.
+    consumer = FakeConsumer(worker, events, [[_record(1)]], repeat=True)
+    worker._consumer = consumer
+    _patch_connect(monkeypatch, repo)
+
+    await asyncio.wait_for(worker.run(), timeout=5)
+
+    # Only the initial fetch: while the batch awaits a retry nothing more is pulled, so
+    # the in-memory batch stays bounded and is retried unchanged.
+    assert consumer.getmany_calls == 1
+    assert repo.inserted_batches == [["message-1"]] * 4
+    assert events == ["schema"] + ["insert", "schema"] * 3 + ["insert", "commit", "stop"]
+
+
+@pytest.mark.anyio
+async def test_run_flushes_pending_batch_on_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    repo = FakeRepo(events)
+    # A long flush interval keeps the records buffered until shutdown.
+    worker = _bare_worker(flush_interval_seconds=3600)
+    worker._consumer = FakeConsumer(worker, events, [[_record(1), _record(2)]])
+    _patch_connect(monkeypatch, repo)
+
+    await asyncio.wait_for(worker.run(), timeout=5)
+
+    assert repo.inserted_batches == [["message-1", "message-2"]]
+    assert events == ["schema", "insert", "commit", "stop"]
+
+
+@pytest.mark.anyio
+async def test_run_leaves_offsets_uncommitted_when_final_flush_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    repo = FakeRepo(events, insert_failures=1)
+    worker = _bare_worker(flush_interval_seconds=3600)
+    worker._consumer = FakeConsumer(worker, events, [[_record(1), _record(2)]])
+    _patch_connect(monkeypatch, repo)
+
+    await asyncio.wait_for(worker.run(), timeout=5)
+
+    # The failed final insert is logged, offsets stay uncommitted (records are replayed
+    # on restart) and the consumer is still stopped.
+    assert events == ["schema", "insert", "stop"]
+
+
+@pytest.mark.anyio
+async def test_run_commits_batch_of_only_invalid_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    repo = FakeRepo(events)
+    worker = _bare_worker()
+    worker._consumer = FakeConsumer(worker, events, [[_invalid_record(1), _invalid_record(2)]])
+    _patch_connect(monkeypatch, repo)
+
+    await asyncio.wait_for(worker.run(), timeout=5)
+
+    # Poison records are skipped and their offsets committed so they are not re-read forever.
+    assert repo.insert_calls == 0
+    assert events == ["schema", "commit", "stop"]
+
+
+@pytest.mark.anyio
+async def test_run_survives_commit_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    repo = FakeRepo(events)
+    worker = _bare_worker()
+    worker._consumer = FakeConsumer(worker, events, [[_record(1)], [_record(2)]], commit_failures=1)
+    _patch_connect(monkeypatch, repo)
+
+    await asyncio.wait_for(worker.run(), timeout=5)
+
+    # The failed commit is swallowed; the worker keeps consuming and commits the next batch.
+    assert repo.inserted_batches == [["message-1"], ["message-2"]]
+    assert events == ["schema", "insert", "commit", "insert", "commit", "stop"]
 
 
 @pytest.mark.anyio
 async def test_run_exits_when_schema_migration_never_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    repo = FakeRepo(schema_failures=100)
+    events: list[str] = []
+    repo = FakeRepo(events, schema_failures=100)
     worker = _bare_worker()
-    worker._consumer = FakeConsumer(worker, [])
-
-    async def fake_connect(cls: Any, **kwargs: Any) -> FakeRepo:
-        return repo
+    worker._consumer = FakeConsumer(worker, events, [])
 
     original_ensure = ClickHouseConsumerWorker._ensure_schema_with_retry
 
     async def fast_ensure(self: ClickHouseConsumerWorker) -> None:
         await original_ensure(self, attempts=2, delay_seconds=0)
 
-    monkeypatch.setattr(clickhouse_consumer.ClickHouseRepository, "connect", classmethod(fake_connect))
+    _patch_connect(monkeypatch, repo)
     monkeypatch.setattr(ClickHouseConsumerWorker, "_ensure_schema_with_retry", fast_ensure)
 
     with pytest.raises(RuntimeError, match="schema unavailable"):
-        await worker.run()
+        await asyncio.wait_for(worker.run(), timeout=5)
 
     assert repo.schema_calls == 2
     assert repo.insert_calls == 0
+    assert events == ["schema", "schema"]

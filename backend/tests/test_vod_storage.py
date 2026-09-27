@@ -251,7 +251,9 @@ async def test_upsert_and_get_vod_analysis_use_fake_client() -> None:
 
 
 def test_fill_activity_buckets_zero_fills_gaps_and_drops_out_of_range() -> None:
-    rows = [(-1, 99, 99), (0, 3, 2), (2, 5, 4), (4, 1, 1), (5, 50, 50)]
+    # Out-of-range rows come last so a wrap-around bug (e.g. -1 landing in the last
+    # bucket) would overwrite real data instead of being masked by a later row.
+    rows = [(0, 3, 2), (2, 5, 4), (4, 1, 1), (5, 50, 50), (-1, 99, 99)]
 
     buckets = _fill_activity_buckets(rows, duration_seconds=45, bucket_seconds=10)
 
@@ -260,12 +262,6 @@ def test_fill_activity_buckets_zero_fills_gaps_and_drops_out_of_range() -> None:
     assert [bucket.offset_seconds for bucket in buckets] == [0, 10, 20, 30, 40]
     assert [bucket.message_count for bucket in buckets] == [3, 0, 5, 0, 1]
     assert [bucket.unique_chatter_count for bucket in buckets] == [2, 0, 4, 0, 1]
-
-
-def test_fill_activity_buckets_drops_negative_indices() -> None:
-    buckets = _fill_activity_buckets([(-2, 9, 9), (-1, 8, 8)], duration_seconds=20, bucket_seconds=10)
-
-    assert [(b.index, b.message_count) for b in buckets] == [(0, 0), (1, 0)]
 
 
 def test_fill_activity_buckets_handles_empty_and_invalid_inputs() -> None:

@@ -668,13 +668,17 @@ async def test_label_writes_titles_with_fake_openai(monkeypatch) -> None:
 
 @pytest.mark.anyio
 async def test_label_keeps_heuristic_labels_on_garbage(monkeypatch) -> None:
-    clickhouse = LabelClickHouse(labeled_analysis())
+    original = labeled_analysis()
+    clickhouse = LabelClickHouse(original)
     service = VodLabelService(clickhouse=clickhouse, api_key="test-key", model="label-model")
     monkeypatch.setattr(service, "_call_openai", lambda _analysis: "I cannot do that")
 
     result = await service.label("123456")
 
     assert [peak.title for peak in result.peaks] == ["", ""]
+    assert [peak.label for peak in result.peaks] == ["KEKW · baron · 8.0 msg/s"] * 2
+    assert result.peaks == original.peaks
+    assert result == original
     assert result.label_model == ""
     assert clickhouse.upserted == []
 

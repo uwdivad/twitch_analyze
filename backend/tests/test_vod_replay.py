@@ -341,12 +341,19 @@ async def test_persisted_query_not_found_is_not_retried(no_sleep: list[float]) -
 
 @pytest.mark.anyio
 async def test_other_gql_errors_raise(no_sleep: list[float]) -> None:
+    attempts = 0
+
     async def fetch_json(body: Any) -> Any:
-        return {"errors": [{"message": "service timeout"}, {"message": "other"}]}
+        nonlocal attempts
+        attempts += 1
+        # No TRANSIENT_GQL_ERRORS marker in any message: must fail fast without retrying.
+        return {"errors": [{"message": "bad variable"}, {"message": "other"}]}
 
     async with make_client(fetch_json) as client:
-        with pytest.raises(RuntimeError, match="service timeout; other"):
+        with pytest.raises(RuntimeError, match=r"^Twitch GQL errors: bad variable; other$"):
             await client.fetch_video("1")
+    assert attempts == 1
+    assert no_sleep == []
 
 
 @pytest.mark.anyio
