@@ -1,4 +1,8 @@
+import asyncio
 from datetime import UTC, datetime
+from typing import Any
+
+import pytest
 
 from app.models.chat import TranscriptSegment
 from app.storage.clickhouse import ClickHouseRepository
@@ -31,13 +35,6 @@ def test_transcript_segment_row_preserves_storage_fields() -> None:
         "transcribed",
         "",
     )
-
-
-# Imports kept with this appended section so the module header stays untouched.
-import asyncio  # noqa: E402
-from typing import Any  # noqa: E402
-
-import pytest  # noqa: E402
 
 
 class RecordingInsertClient:

@@ -1,7 +1,17 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
-from app.workers.audio_capture import build_ffmpeg_command, build_streamlink_command, parse_chunk_started_at
+import pytest
+
+from app.workers.audio_capture import (
+    AudioCaptureWorker,
+    AudioChunk,
+    build_ffmpeg_command,
+    build_streamlink_command,
+    parse_chunk_started_at,
+)
 
 
 def test_build_streamlink_command_uses_channel_url_and_stdout() -> None:
@@ -41,15 +51,6 @@ def test_parse_chunk_started_at_reads_utc_filename() -> None:
     started_at = parse_chunk_started_at(Path("/tmp/audio/20260507T153000Z.wav"))
 
     assert started_at == datetime(2026, 5, 7, 15, 30, tzinfo=UTC)
-
-
-# Imports kept with this appended section so the module header stays untouched.
-from types import SimpleNamespace  # noqa: E402
-from typing import Any  # noqa: E402
-
-import pytest  # noqa: E402
-
-from app.workers.audio_capture import AudioCaptureWorker, AudioChunk  # noqa: E402
 
 
 @pytest.mark.parametrize(

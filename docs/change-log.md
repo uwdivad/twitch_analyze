@@ -538,3 +538,27 @@ Added `app/core/logging_setup.py` (`configure_logging`), called by the API and e
 ### Verification
 
 `cd backend && PYTHONPATH=. pytest` (177 passed); manual check that a configured process writes to both console and file without duplicate handlers.
+
+## 2026-09-27 - Fix VOD Peak Stealing Its Neighbor's Burst
+
+### Reason
+
+A test audit added coverage for `detect_peaks` edge cases, and one new test showed a real bug. When two peaks sat close together, the first peak's range could grow up to the bucket just before the second peak's range. That bucket could hold the second peak's actual burst, and the overlap clamp then gave it to the first peak. The second peak then pointed at the flat stretch next to its burst and reported too few messages. For example, bursts at buckets 100 and 110 came out as `(100, 80), (111, 30)` instead of `(100, 80), (110, 80)`.
+
+### Change
+
+In `app/services/vod_analysis.py` `detect_peaks`, a peak's range now also stops growing one bucket before the next accepted peak's range. Nothing else in the algorithm changed. Stored analyses are not rewritten. Re-analyze with `force` to pick up the fix.
+
+The same PR adds about 70 tests for paths that had none, all in `backend/tests`. They cover:
+- The transcript consumer run loop, including commit-after-insert.
+- Fail-soft analytics routes and route error mapping.
+- The Settings catalog's restart flags.
+- Peak-detection edge cases, and VOD run cancellation and error paths.
+- ClickHouse column/row alignment.
+- The GraphQL HTTP transport.
+- Audio-capture failure publishing.
+- The EventSub websocket reconnect flow.
+
+### Verification
+
+`cd backend && PYTHONPATH=. pytest` (247 passed). Every new test was checked by deliberately breaking the code it covers and confirming it fails. That was 105 breaks, and each one was caught.

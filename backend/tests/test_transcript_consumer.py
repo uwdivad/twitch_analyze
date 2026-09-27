@@ -1,8 +1,13 @@
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 from app.core.json import dumps
-from app.workers.transcript_consumer import transcript_segment_from_record
+from app.workers import transcript_consumer
+from app.workers.transcript_consumer import TranscriptConsumerWorker, transcript_segment_from_record
 
 
 def test_transcript_segment_from_record_parses_valid_payload() -> None:
@@ -34,17 +39,7 @@ def test_transcript_segment_from_record_skips_invalid_payload() -> None:
 
 # ---------------------------------------------------------------------------
 # Run loop: offsets are committed only after a successful ClickHouse insert.
-# Imports are kept with this section so it can be appended without touching the
-# module header.
 # ---------------------------------------------------------------------------
-
-import asyncio  # noqa: E402
-from typing import Any  # noqa: E402
-
-import pytest  # noqa: E402
-
-from app.workers import transcript_consumer  # noqa: E402
-from app.workers.transcript_consumer import TranscriptConsumerWorker  # noqa: E402
 
 
 class LoopRepo:
