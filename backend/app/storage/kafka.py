@@ -29,6 +29,7 @@ class KafkaJsonProducer:
             for attempt in range(1, attempts + 1):
                 try:
                     await self._producer.start()
+                    logger.info("Kafka producer started for topic %s (%s)", self._topic, self._bootstrap_servers)
                     return
                 except Exception:
                     if attempt == attempts:
@@ -40,6 +41,7 @@ class KafkaJsonProducer:
         if self._producer is not None:
             await self._producer.stop()
             self._producer = None
+            logger.info("Kafka producer stopped for topic %s", self._topic)
 
     async def flush(self) -> None:
         """Wait until every queued message has been delivered (or failed).

@@ -495,3 +495,46 @@ End to end with `docker compose up --build` on an existing ClickHouse volume (46
 - UI (Playwright, compose frontend on `localhost:5173`): the Live view renders as before. The VODs tab went through the fetching and completed states. Clicking a peak marker seeked the embed to the peak start. The playhead advanced ~1 s/s during playback. "Label peaks with AI" filled the titles. The theme toggle restyles the VOD view. The hover tooltip stays inside the bar at both edges. There is no horizontal overflow at 390 px.
 
 Screenshots: `docs/screenshots/ui-overhaul-{dark,light}-1440.png`, `ui-overhaul-{dark,light}-390.png`, `ui-overhaul-{dark,light}-1440-sample-data.png`, `vod-view-dark-1440.png`, `vod-view-light-1440.png`, `vod-view-dark-390.png`.
+
+## 2026-09-27 - Settings Page and Feature Flags
+
+### Reason
+
+Every backend option lived only in `.env`, so changing a channel list, model or VOD limit meant editing the file and restarting processes. There was also no way to switch individual features off.
+
+### Change
+
+- New **Settings** view (gear button in the topbar, `#settings`). It lists every dashboard-editable `Settings` field grouped by area, with its env var, a badge for when a change takes effect (instant, restarts ingestion, API restart, worker restart), the `.env` value behind a saved override, and "Use .env" to drop the override. Secrets are write-only: the API reports only whether they are set.
+- `GET/PUT /api/settings` (both behind `require_api_key`) and `GET /api/features`. Saved values go to `SETTINGS_OVERRIDES_FILE` (default `backend/data/settings-overrides.json`, written atomically with mode 0600) and override `.env`. `get_settings()` merges them, and a save clears its cache, so request-time settings apply immediately.
+- Kafka/ClickHouse connection and topology settings, `API_AUTH_TOKEN` and `SETTINGS_OVERRIDES_FILE` are `.env`-only (`ENV_ONLY_SETTINGS`). They are left off the Settings page, rejected by `PUT /api/settings`, and ignored if they appear in the overrides file.
+- Twitch ingestion moved from the `main.py` lifespan into `IngestionManager` (`app/ingestion/manager.py`). Saving a Twitch/ingestion setting restarts ingestion in place. An EventSub user-id lookup failure now leaves ingestion stopped instead of failing API startup.
+- New feature flags `ENABLE_SUMMARIES`, `ENABLE_TRANSCRIPTION`, `ENABLE_VOD_ANALYSIS`, `ENABLE_VOD_LABELS`, all default on. When a flag is off, the matching endpoint returns 403 and the dashboard hides the panel or button. Stored VOD analyses stay viewable.
+- The "This browser" section covers theme, time window, update cadence, live updates, hide bots, and an API key that is sent as `X-API-Key`. The dashboard toolbar now persists the same preferences to localStorage.
+- Compose: an `app-settings` volume at `/app/data` is shared by the backend and all workers, so they read the same overrides.
+
+### Verification
+
+```bash
+cd backend && PYTHONPATH=. pytest   # 177 passed, incl. tests/test_settings.py
+cd frontend && npm run build        # passed
+```
+
+Also smoke-tested over HTTP with `TestClient`: 401 without the key, a save of mixed values reported the changed keys, secrets were masked, `recent_message_limit` was flagged as pending restart, summary generation returned 403 with the flag off, and env-only and out-of-range values returned 422.
+
+### Follow-up: API hung after a `--reload`
+
+A code change reloaded uvicorn while a dashboard tab held the SSE live feed (`/api/messages/stream`) open through the Vite proxy. uvicorn's graceful shutdown waits for open connections, and that stream never ends by itself, so the old worker never exited, the new one never started, and every request (including `/health`) timed out. All uvicorn launches (`scripts/start.py`, both compose files, the backend Dockerfile) now pass `--timeout-graceful-shutdown 5`. After 5 s the stream is cut, and the browser's `EventSource` reconnects on its own.
+
+## 2026-09-27 - Daily Rolling Backend Log Files
+
+### Reason
+
+Backend logs only went to the console, so anything older than the terminal/container log buffer was lost.
+
+### Change
+
+Added `app/core/logging_setup.py` (`configure_logging`), called by the API and every worker entrypoint in place of `logging.basicConfig`. Each process keeps console logging and also writes `<LOG_DIR>/<process>.log` (`api`, `clickhouse-consumer`, `transcript-consumer`, `audio-capture`) through a `TimedRotatingFileHandler` that rotates at UTC midnight and keeps `LOG_RETENTION_DAYS` files. Files are per process because the rotating handler is not multi-process safe. Uvicorn's server/access loggers are attached to the file too. New settings: `LOG_DIR` (env-only, default `logs`) and `LOG_RETENTION_DAYS` (Settings page, default 14). Docker mounts a shared `app-logs` volume at `/app/logs`. Also added lifecycle logging to the IRC client, Kafka producer, ClickHouse connect, RealtimeHub subscriber drops, SummaryService and VOD analysis runs.
+
+### Verification
+
+`cd backend && PYTHONPATH=. pytest` (177 passed); manual check that a configured process writes to both console and file without duplicate handlers.

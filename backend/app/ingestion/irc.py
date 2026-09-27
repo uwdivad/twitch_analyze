@@ -119,12 +119,14 @@ class TwitchIrcClient:
                 break
             if loop.time() - attempt_started_at >= BACKOFF_RESET_SECONDS:
                 backoff_seconds = 2
+            logger.info("Twitch IRC disconnected; reconnecting in %ss", backoff_seconds)
             # Back off on clean closes too (e.g. server rejecting bad OAuth), not just
             # exceptions, so a server-initiated close cannot become a zero-delay busy loop.
             await asyncio.sleep(backoff_seconds)
             backoff_seconds = min(backoff_seconds * 2, 60)
 
     async def stop(self) -> None:
+        logger.info("Stopping Twitch IRC client")
         self._stopped.set()
 
     async def _connect_once(self) -> None:
@@ -132,6 +134,7 @@ class TwitchIrcClient:
             async with session.ws_connect(TWITCH_IRC_WS, heartbeat=30) as ws:
                 await self._authenticate(ws)
                 await self._join_channels(ws)
+                logger.info("Twitch IRC connected as %s; joined %s", self._username, ", ".join(self._channels) or "no channels")
                 await self._on_status({"state": "irc_connected", "channels": self._channels, "username": self._username})
 
                 async for ws_message in ws:

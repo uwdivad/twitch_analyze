@@ -47,8 +47,14 @@ function channelName(analysis: VodAnalysis): string {
   return analysis.channel_display_name || analysis.channel_login || 'unknown channel';
 }
 
-// Memoized: App re-renders on every live-feed flush, and VodView takes no props.
-export const VodView = React.memo(function VodView() {
+type VodViewProps = {
+  // Feature flags from Settings; the backend rejects the actions when off.
+  canAnalyze: boolean;
+  canLabel: boolean;
+};
+
+// Memoized: App re-renders on every live-feed flush; the props are plain booleans.
+export const VodView = React.memo(function VodView({ canAnalyze, canLabel }: VodViewProps) {
   const vod = useVodAnalysis();
   const { job, analysis, activity } = vod;
   const playerRef = React.useRef<VodPlayerHandle | null>(null);
@@ -95,7 +101,13 @@ export const VodView = React.memo(function VodView() {
         </h1>
       </header>
 
-      <VodForm isStarting={vod.isStarting} onAnalyze={handleAnalyze} />
+      {canAnalyze ? (
+        <VodForm isStarting={vod.isStarting} onAnalyze={handleAnalyze} />
+      ) : (
+        <p className="muted vod-small">
+          VOD analysis is turned off in <a href="#settings">Settings</a>. Stored analyses stay viewable.
+        </p>
+      )}
 
       {progress && job ? (
         <div className="vod-status card" role="status" aria-live="polite">
@@ -206,6 +218,7 @@ export const VodView = React.memo(function VodView() {
                 </select>
               </label>
 
+              {canLabel ? (
               <div className="vod-label-action">
                 <button
                   type="button"
@@ -220,6 +233,7 @@ export const VodView = React.memo(function VodView() {
                   <span className="muted vod-small">Labeled by {analysis.label_model}</span>
                 ) : null}
               </div>
+              ) : null}
 
               <RecentList recent={vod.recent} activeId={analysis.video_id} onOpen={vod.open} />
             </aside>
