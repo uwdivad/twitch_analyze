@@ -562,3 +562,17 @@ The same PR adds about 70 tests for paths that had none, all in `backend/tests`.
 ### Verification
 
 `cd backend && PYTHONPATH=. pytest` (247 passed). Every new test was checked by deliberately breaking the code it covers and confirming it fails. That was 105 breaks, and each one was caught.
+
+## 2026-09-27 - Fix Summary Window on Non-UTC ClickHouse Servers
+
+### Reason
+
+Chat summaries always failed with "No chat messages found for the requested summary window", even while chat was being stored. `summary_context` sent the window bounds as timezone-aware datetimes. clickhouse-connect writes those out as plain date-time strings in the ClickHouse server's timezone, but `event_ts` is stored in UTC, so the server read them as UTC. On a server running in `America/New_York`, every summary window landed 4 hours in the past.
+
+### Change
+
+`ClickHouseRepository.summary_context` now filters on `toUnixTimestamp64Milli(event_ts)` and sends the window as UTC epoch milliseconds, the same approach the VOD queries already use. No other query passes datetime parameters.
+
+### Verification
+
+`cd backend && PYTHONPATH=. pytest` (284 passed). The new regression test fails on the old code. Against the local ClickHouse (server timezone `America/New_York`), a 60-minute window for a live channel returned 411 messages; before the fix it returned none.
