@@ -1,7 +1,35 @@
+import json
+import logging
 from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+# Settings that can only come from the environment/.env, never from the UI overrides
+# file: connection/topology values every process must agree on (and that compose
+# injects per container), the API auth token (editing it through the API it guards
+# could lock the dashboard out), and the overrides file location itself.
+ENV_ONLY_SETTINGS = frozenset(
+    {
+        "api_auth_token",
+        "settings_overrides_file",
+        "log_dir",
+        "kafka_bootstrap_servers",
+        "kafka_chat_topic",
+        "kafka_transcript_topic",
+        "kafka_consumer_group",
+        "kafka_transcript_consumer_group",
+        "clickhouse_host",
+        "clickhouse_port",
+        "clickhouse_username",
+        "clickhouse_password",
+        "clickhouse_database",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -9,7 +37,13 @@ class Settings(BaseSettings):
 
     app_env: str = "local"
     log_level: str = "INFO"
+    # Each process writes <log_dir>/<process>.log, rotated at UTC midnight.
+    log_dir: str = "logs"
+    log_retention_days: int = Field(default=14, ge=1)
     api_auth_token: str = ""
+    # JSON file holding values saved from the dashboard Settings page. They take
+    # precedence over the environment and .env. Relative paths resolve from the cwd.
+    settings_overrides_file: str = "data/settings-overrides.json"
 
     twitch_client_id: str = ""
     twitch_client_secret: str = ""
@@ -65,6 +99,12 @@ class Settings(BaseSettings):
     # Empty falls back to openai_summary_model.
     openai_vod_label_model: str = ""
 
+    # Feature flags (dashboard features; the ingestion/audio toggles live above).
+    enable_summaries: bool = True
+    enable_transcription: bool = True
+    enable_vod_analysis: bool = True
+    enable_vod_labels: bool = True
+
     @property
     def channel_logins(self) -> list[str]:
         return [part.strip().lower() for part in self.twitch_channels.split(",") if part.strip()]
@@ -98,6 +138,39 @@ class Settings(BaseSettings):
         return value
 
 
+def read_overrides(path: str | Path) -> dict[str, Any]:
+    """Load saved UI overrides, keeping only known, editable settings."""
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        logger.warning("Ignoring unreadable settings overrides file %s", path, exc_info=True)
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning("Ignoring settings overrides file %s: expected a JSON object", path)
+        return {}
+    return {
+        key: value
+        for key, value in raw.items()
+        if key in Settings.model_fields and key not in ENV_ONLY_SETTINGS
+    }
+
+
+def load_settings() -> Settings:
+    base = Settings()
+    overrides = read_overrides(base.settings_overrides_file)
+    if not overrides:
+        return base
+    try:
+        # Init kwargs take precedence over env/.env in pydantic-settings.
+        return Settings(**overrides)
+    except ValidationError:
+        logger.warning("Ignoring invalid settings overrides in %s", base.settings_overrides_file, exc_info=True)
+        return base
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    # Cached per process; the settings API clears the cache after saving overrides.
+    return load_settings()

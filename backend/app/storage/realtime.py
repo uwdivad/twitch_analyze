@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections import deque
 
 from app.core.json import dumps
@@ -8,6 +9,8 @@ from app.models.chat import ChatMessage, LiveEnvelope
 # Bound per-subscriber queues so one slow SSE client can't grow memory without limit;
 # it gets dropped instead of stalling broadcasts to everyone else.
 _SUBSCRIBER_QUEUE_SIZE = 1000
+
+logger = logging.getLogger(__name__)
 
 
 class RealtimeHub:
@@ -55,6 +58,7 @@ class RealtimeHub:
                 stale.append(queue)
 
         if stale:
+            logger.warning("Dropping %s slow live-feed subscriber(s) with full queues", len(stale))
             async with self._lock:
                 for queue in stale:
                     self._subscribers.discard(queue)

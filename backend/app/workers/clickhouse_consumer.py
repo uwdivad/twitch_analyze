@@ -8,6 +8,7 @@ from aiokafka import AIOKafkaConsumer
 from prometheus_client import start_http_server
 
 from app.core.config import get_settings
+from app.core.logging_setup import configure_logging
 from app.core.json import loads
 from app.core.metrics import WORKER_BATCHES_INSERTED, WORKER_KAFKA_CONNECTED
 from app.models.chat import ChatMessage
@@ -178,7 +179,7 @@ class ClickHouseConsumerWorker:
 
 
 async def main() -> None:
-    logging.basicConfig(level=get_settings().log_level)
+    configure_logging(get_settings(), "clickhouse-consumer")
     start_http_server(9101)
     worker = ClickHouseConsumerWorker()
     loop = asyncio.get_running_loop()

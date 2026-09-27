@@ -8,26 +8,26 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.routes import router
 from app.core.config import get_settings
-from app.core.metrics import CHAT_MESSAGES_INGESTED, INGESTION_CONNECTED
-from app.ingestion.irc import TwitchIrcClient
-from app.ingestion.twitch import TwitchEventSubClient, resolve_twitch_user_id
-from app.models.chat import ChannelInfo, ChatMessage
+from app.core.logging_setup import configure_logging
+from app.core.metrics import CHAT_MESSAGES_INGESTED
+from app.ingestion.manager import IngestionManager
+from app.models.chat import ChatMessage
 from app.storage.clickhouse import ClickHouseRepository
 from app.storage.kafka import KafkaChatProducer
 from app.storage.realtime import RealtimeHub
 
-logging.basicConfig(level=get_settings().log_level)
+configure_logging(get_settings(), "api")
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # Snapshot of what this process started with, so the settings API can flag
+    # saved changes that only take effect after a restart.
+    app.state.startup_settings = settings
 
-    app.state.channels = {
-        login: ChannelInfo(channel_id="", channel_login=login, channel_display_name=login, status="configured")
-        for login in settings.channel_logins
-    }
+    app.state.channels = {}
     app.state.realtime_hub = RealtimeHub(recent_limit=settings.recent_message_limit)
     app.state.clickhouse = await ClickHouseRepository.connect(
         host=settings.clickhouse_host,
@@ -43,7 +43,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Failed to ensure VOD analysis schema in ClickHouse", exc_info=True)
     app.state.kafka = KafkaChatProducer(settings.kafka_bootstrap_servers, settings.kafka_chat_topic)
-    app.state.ingestion_task = None
     app.state.transcription_jobs = {}
     app.state.transcription_tasks = {}
     app.state.vod_jobs = {}
@@ -63,45 +62,14 @@ async def lifespan(app: FastAPI):
         await app.state.realtime_hub.publish_message(message)
 
     async def handle_status(status: dict) -> None:
-        state = status.get("state", "")
-        if state in {"irc_connected", "connected"}:
-            INGESTION_CONNECTED.labels(mode=settings.twitch_ingestion_mode).set(1)
-        elif state in {"irc_error", "error", "revoked"}:
-            INGESTION_CONNECTED.labels(mode=settings.twitch_ingestion_mode).set(0)
-        channel = status.get("channel")
-        if channel:
-            info = ChannelInfo(**channel)
-            app.state.channels[info.channel_login] = info
         await app.state.realtime_hub.broadcast_status(status)
 
-    if settings.enable_twitch_ingestion and settings.twitch_configured:
-        if settings.twitch_ingestion_mode == "irc":
-            client = TwitchIrcClient(
-                channels=settings.channel_logins,
-                username=settings.twitch_username,
-                access_token=settings.twitch_access_token if settings.twitch_username else "",
-                on_message=handle_message,
-                on_status=handle_status,
-            )
-        else:
-            user_id = settings.twitch_user_id or await resolve_twitch_user_id(
-                settings.twitch_client_id,
-                settings.twitch_access_token,
-            )
-            client = TwitchEventSubClient(
-                client_id=settings.twitch_client_id,
-                access_token=settings.twitch_access_token,
-                channels=settings.channel_logins,
-                user_id=user_id,
-                on_message=handle_message,
-                on_status=handle_status,
-            )
-        logger.info("Starting Twitch ingestion mode: %s", settings.twitch_ingestion_mode)
-        app.state.twitch_client = client
-        app.state.ingestion_task = asyncio.create_task(client.run_forever())
-    else:
-        INGESTION_CONNECTED.labels(mode=settings.twitch_ingestion_mode).set(0)
-        logger.warning("Twitch ingestion disabled or not configured")
+    app.state.ingestion = IngestionManager(
+        channels=app.state.channels,
+        on_message=handle_message,
+        on_status=handle_status,
+    )
+    await app.state.ingestion.start(settings)
 
     try:
         yield
@@ -109,20 +77,10 @@ async def lifespan(app: FastAPI):
         # Each shutdown step is independently protected so one failure (e.g. an
         # ingestion task that stored a non-cancellation exception) cannot skip the
         # remaining cleanup.
-        task = app.state.ingestion_task
-        if task:
-            INGESTION_CONNECTED.labels(mode=settings.twitch_ingestion_mode).set(0)
-            try:
-                await app.state.twitch_client.stop()
-            except Exception:
-                logger.exception("Failed to stop Twitch client during shutdown")
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logger.exception("Ingestion task raised during shutdown")
+        try:
+            await app.state.ingestion.stop()
+        except Exception:
+            logger.exception("Failed to stop Twitch ingestion during shutdown")
         transcription_tasks = list(app.state.transcription_tasks.values())
         for transcription_task in transcription_tasks:
             transcription_task.cancel()

@@ -952,10 +952,13 @@ class ClickHouseRepository:
 
     def _connect_with_retry(self, attempts: int = 30, delay_seconds: float = 2.0, **kwargs: Any):
         last_error: Exception | None = None
-        for _ in range(attempts):
+        for attempt in range(1, attempts + 1):
             try:
-                return clickhouse_connect.get_client(**kwargs)
+                client = clickhouse_connect.get_client(**kwargs)
+                logger.info("Connected to ClickHouse at %s:%s/%s", kwargs.get("host"), kwargs.get("port"), kwargs.get("database"))
+                return client
             except Exception as exc:
                 last_error = exc
+                logger.warning("ClickHouse is not ready yet; retrying connect (%s/%s): %s", attempt, attempts, exc)
                 time.sleep(delay_seconds)
         raise RuntimeError("ClickHouse is not reachable") from last_error

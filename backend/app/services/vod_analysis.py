@@ -343,6 +343,7 @@ class VodAnalysisService:
         """Run the whole pipeline for one VOD. Never raises (except on cancellation)."""
         video: VodMetadata | None = None
         fetching = True
+        logger.info("VOD analysis for %s started%s", video_id, " (skipping fetch)" if skip_fetch else "")
         try:
             self._update(video_id, status="fetching", detail="Loading VOD metadata", error="")
             async with self._gql_factory() as gql:
@@ -363,6 +364,10 @@ class VodAnalysisService:
             self._update(video_id, status="analyzing", detail="Detecting chat peaks")
             analysis = await self._analyze(video)
             await self._clickhouse.upsert_vod_analysis(analysis)
+            logger.info(
+                "VOD analysis for %s completed: %s peaks from %s messages",
+                video_id, len(analysis.peaks), analysis.message_count,
+            )
             self._update(
                 video_id,
                 status="completed",
@@ -370,6 +375,7 @@ class VodAnalysisService:
                 detail=f"{len(analysis.peaks)} peaks from {analysis.message_count} messages",
             )
         except asyncio.CancelledError:
+            logger.info("VOD analysis for %s cancelled", video_id)
             self._update(video_id, status="failed", error="Cancelled", detail="Job cancelled")
             raise
         except _VodFailure as exc:

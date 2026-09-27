@@ -67,7 +67,11 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./backend/app:/app/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - app-settings:/app/data
+      - app-logs:/app/logs
+    # The SSE live feed never closes on its own, so cap graceful shutdown or a
+    # reload waits forever on open dashboard tabs.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 5
 
   worker:
     build:
@@ -88,6 +92,8 @@ services:
       - "127.0.0.1:9101:9101"
     volumes:
       - ./backend/app:/app/app
+      - app-settings:/app/data
+      - app-logs:/app/logs
     command: python -m app.workers.clickhouse_consumer
 
   transcript-worker:
@@ -109,6 +115,8 @@ services:
       - "127.0.0.1:9102:9102"
     volumes:
       - ./backend/app:/app/app
+      - app-settings:/app/data
+      - app-logs:/app/logs
     command: python -m app.workers.transcript_consumer
 
   audio-capture:
@@ -123,6 +131,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     volumes:
       - ./backend/app:/app/app
+      - app-settings:/app/data
+      - app-logs:/app/logs
       - audio-chunks:/tmp/twitch-audio
     command: python -m app.workers.audio_capture
 
@@ -196,3 +206,7 @@ volumes:
   clickhouse-data:
   kafka-data:
   audio-chunks:
+  # Values saved from the dashboard Settings page, shared by the API and workers.
+  app-settings:
+  # Daily rolling log files, one per backend process (api.log, clickhouse-consumer.log, ...).
+  app-logs:

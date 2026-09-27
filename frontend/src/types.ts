@@ -73,7 +73,58 @@ export type TranscriptionJob = {
   detail: string;
 };
 
-export type AppView = 'live' | 'vods';
+export type AppView = 'live' | 'vods' | 'settings';
+
+export type FeatureFlags = {
+  twitch_ingestion: boolean;
+  summaries: boolean;
+  transcription: boolean;
+  vod_analysis: boolean;
+  vod_labels: boolean;
+  audio_capture: boolean;
+};
+
+export type SettingKind = 'string' | 'secret' | 'int' | 'float' | 'bool' | 'select' | 'list';
+
+// When a saved change takes effect (see backend app/core/runtime_settings.py).
+export type SettingApply = 'live' | 'ingestion' | 'restart' | 'worker';
+
+export type SettingValue = string | number | boolean | null;
+
+export type SettingField = {
+  key: string;
+  env_var: string;
+  group: string;
+  label: string;
+  description: string;
+  kind: SettingKind;
+  apply: SettingApply;
+  options: string[];
+  minimum: number | null;
+  maximum: number | null;
+  secret: boolean;
+  value: SettingValue;
+  default: SettingValue;
+  env_value: SettingValue;
+  is_set: boolean;
+  overridden: boolean;
+  pending_restart: boolean;
+};
+
+export type SettingGroup = {
+  id: string;
+  label: string;
+  description: string;
+};
+
+export type SettingsResponse = {
+  groups: SettingGroup[];
+  settings: SettingField[];
+  features: FeatureFlags;
+  overrides_file: string;
+  changed: string[];
+  ingestion_restarted: boolean;
+};
 
 export type VodJobStatus = 'queued' | 'fetching' | 'ingesting' | 'analyzing' | 'completed' | 'failed';
 

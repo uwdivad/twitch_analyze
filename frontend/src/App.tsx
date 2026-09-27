@@ -1,11 +1,10 @@
 import React from 'react';
 
 import { generateSummary, loadDashboardData, loadSummaries, loadTranscriptionJob, startTranscription } from './api/client';
+import { loadFeatures } from './api/settings';
 import { ChannelVolumeCharts } from './components/ChannelVolumeCharts';
 import { ChannelControls } from './components/ChannelControls';
 import {
-  DEFAULT_LIVE_UPDATE_INTERVAL_MS,
-  DEFAULT_VOLUME_WINDOW_MINUTES,
   KNOWN_BOTS,
   MAX_LIVE_MESSAGES_PER_FLUSH,
   MIN_DASHBOARD_RELOAD_INTERVAL_MS,
@@ -18,8 +17,10 @@ import { Topbar } from './components/Topbar';
 import { TopList } from './components/TopList';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { VolumeChart } from './components/VolumeChart';
+import { SettingsView } from './features/settings/SettingsView';
 import { VodView } from './features/vod/VodView';
 import { useLiveMessages } from './hooks/useLiveMessages';
+import { usePreferences } from './hooks/usePreferences';
 import { useTheme } from './hooks/useTheme';
 import type {
   AppView,
@@ -27,6 +28,7 @@ import type {
   ChannelVolumeSeries,
   ChatMessage,
   ChatSummary,
+  FeatureFlags,
   TopItem,
   TranscriptionJob,
   VolumePoint
@@ -40,11 +42,22 @@ import {
   mergeVolumeSeries
 } from './utils/analytics';
 
+// Until /api/features answers, assume everything is on (the backend still enforces flags).
+const DEFAULT_FEATURES: FeatureFlags = {
+  twitch_ingestion: true,
+  summaries: true,
+  transcription: true,
+  vod_analysis: true,
+  vod_labels: true,
+  audio_capture: false
+};
+
 function viewFromHash(hash: string): AppView {
-  return hash.replace(/^#/, '') === 'vods' ? 'vods' : 'live';
+  const view = hash.replace(/^#/, '');
+  return view === 'vods' || view === 'settings' ? view : 'live';
 }
 
-// The active view lives in location.hash (#live / #vods) so it survives reloads
+// The active view lives in location.hash (#live / #vods / #settings) so it survives reloads
 // and works with back/forward.
 function useHashView(): [AppView, (view: AppView) => void] {
   const [view, setViewState] = React.useState<AppView>(() => viewFromHash(window.location.hash));
@@ -67,7 +80,10 @@ function useHashView(): [AppView, (view: AppView) => void] {
 
 export function App() {
   const [view, setView] = useHashView();
-  const { theme, toggleTheme } = useTheme();
+  const { theme, setTheme, toggleTheme } = useTheme();
+  const [preferences, setPreference, resetPreferences] = usePreferences();
+  const { volumeWindowMinutes, liveUpdateIntervalMs, showLiveFeed, hideBots } = preferences;
+  const [features, setFeatures] = React.useState<FeatureFlags>(DEFAULT_FEATURES);
   const [channels, setChannels] = React.useState<ChannelInfo[]>([]);
   const [selectedChannel, setSelectedChannel] = React.useState<string>('');
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
@@ -77,10 +93,6 @@ export function App() {
   const [topChatters, setTopChatters] = React.useState<TopItem[]>([]);
   const [topEmotes, setTopEmotes] = React.useState<TopItem[]>([]);
   const [summaries, setSummaries] = React.useState<ChatSummary[]>([]);
-  const [volumeWindowMinutes, setVolumeWindowMinutes] = React.useState<number>(DEFAULT_VOLUME_WINDOW_MINUTES);
-  const [liveUpdateIntervalMs, setLiveUpdateIntervalMs] = React.useState<number>(DEFAULT_LIVE_UPDATE_INTERVAL_MS);
-  const [showLiveFeed, setShowLiveFeed] = React.useState<boolean>(true);
-  const [hideBots, setHideBots] = React.useState<boolean>(false);
   const [lastUpdatedAt, setLastUpdatedAt] = React.useState<number | null>(null);
   const [isDashboardUpdating, setIsDashboardUpdating] = React.useState<boolean>(false);
   const [isSummaryGenerating, setIsSummaryGenerating] = React.useState<boolean>(false);
@@ -361,6 +373,36 @@ export function App() {
     return () => window.clearInterval(interval);
   }, [transcriptionJob]);
 
+  React.useEffect(() => {
+    let cancelled = false;
+    loadFeatures()
+      .then((next) => {
+        if (!cancelled) {
+          setFeatures(next);
+        }
+      })
+      .catch(() => {
+        // Fail soft: keep the defaults; gated endpoints still answer 403 when off.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleVolumeWindowChange = React.useCallback(
+    (minutes: number) => setPreference('volumeWindowMinutes', minutes),
+    [setPreference]
+  );
+  const handleLiveUpdateIntervalChange = React.useCallback(
+    (milliseconds: number) => setPreference('liveUpdateIntervalMs', milliseconds),
+    [setPreference]
+  );
+  const handleShowLiveFeedChange = React.useCallback(
+    (show: boolean) => setPreference('showLiveFeed', show),
+    [setPreference]
+  );
+  const handleHideBotsChange = React.useCallback((hide: boolean) => setPreference('hideBots', hide), [setPreference]);
+
   const dashboardReloadIntervalMs = Math.max(liveUpdateIntervalMs, MIN_DASHBOARD_RELOAD_INTERVAL_MS);
 
   React.useEffect(() => {
@@ -399,8 +441,17 @@ export function App() {
 
       {/* Top-level hooks (SSE feed, polling) stay mounted in both views; only the body switches. */}
       <main className="shell">
-        {view === 'vods' ? (
-          <VodView />
+        {view === 'settings' ? (
+          <SettingsView
+            preferences={preferences}
+            onPreferenceChange={setPreference}
+            onResetPreferences={resetPreferences}
+            theme={theme}
+            onThemeChange={setTheme}
+            onFeaturesChange={setFeatures}
+          />
+        ) : view === 'vods' ? (
+          <VodView canAnalyze={features.vod_analysis} canLabel={features.vod_labels} />
         ) : (
           <div className="live-view">
             <header className="page-header">
@@ -418,9 +469,9 @@ export function App() {
               isUpdating={isDashboardUpdating}
               lastUpdatedAt={lastUpdatedAt}
               onChannelChange={setSelectedChannel}
-              onVolumeWindowChange={setVolumeWindowMinutes}
-              onLiveUpdateIntervalChange={setLiveUpdateIntervalMs}
-              onShowLiveFeedChange={setShowLiveFeed}
+              onVolumeWindowChange={handleVolumeWindowChange}
+              onLiveUpdateIntervalChange={handleLiveUpdateIntervalChange}
+              onShowLiveFeedChange={handleShowLiveFeedChange}
               onRefresh={loadDashboard}
             />
 
@@ -458,27 +509,31 @@ export function App() {
                     activeChannel={activeChannel}
                     messages={messages}
                     hideBots={hideBots}
-                    onHideBotsChange={setHideBots}
+                    onHideBotsChange={handleHideBotsChange}
                   />
                 </aside>
               ) : null}
             </div>
 
-            <SummaryPanel
-              activeChannel={activeChannel}
-              summaries={summaries}
-              isLoading={isSummaryGenerating}
-              error={summaryError}
-              onGenerate={handleGenerateSummary}
-            />
+            {features.summaries ? (
+              <SummaryPanel
+                activeChannel={activeChannel}
+                summaries={summaries}
+                isLoading={isSummaryGenerating}
+                error={summaryError}
+                onGenerate={handleGenerateSummary}
+              />
+            ) : null}
 
-            <TranscriptionPanel
-              defaultChannel={activeChannel}
-              job={transcriptionJob}
-              isStarting={isTranscriptionStarting}
-              error={transcriptionError}
-              onStart={handleStartTranscription}
-            />
+            {features.transcription ? (
+              <TranscriptionPanel
+                defaultChannel={activeChannel}
+                job={transcriptionJob}
+                isStarting={isTranscriptionStarting}
+                error={transcriptionError}
+                onStart={handleStartTranscription}
+              />
+            ) : null}
           </div>
         )}
       </main>

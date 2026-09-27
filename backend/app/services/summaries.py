@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -6,6 +7,8 @@ from openai import OpenAI
 
 from app.models.chat import ChatSummary, SummaryContext
 from app.storage.clickhouse import ClickHouseRepository
+
+logger = logging.getLogger(__name__)
 
 
 class SummaryService:
@@ -36,6 +39,10 @@ class SummaryService:
         if context is None:
             raise ValueError("No chat messages found for that channel and window")
 
+        logger.info(
+            "Generating %s-minute chat summary for %s with %s (%s sampled messages)",
+            window_minutes, channel, self._model, len(context.sample_messages),
+        )
         summary_text = await asyncio.to_thread(self._call_openai, context)
         summary = ChatSummary(
             summary_id=str(uuid4()),
@@ -51,6 +58,7 @@ class SummaryService:
             created_at=datetime.now(UTC),
         )
         await self._clickhouse.insert_summary(summary)
+        logger.info("Stored chat summary %s for %s", summary.summary_id, channel)
         return summary
 
     def _call_openai(self, context: SummaryContext) -> str:

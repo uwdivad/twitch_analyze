@@ -14,12 +14,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 # Run as a non-root user; pre-create the audio chunk dir it needs to write to
-# (matches AUDIO_CHUNK_DIR default and the audio-chunks volume mount).
+# (matches AUDIO_CHUNK_DIR default and the audio-chunks volume mount), plus the
+# settings-overrides and log dirs so the app-settings/app-logs volumes are owned by appuser.
 RUN useradd --create-home --uid 1000 appuser \
-    && mkdir -p /tmp/twitch-audio \
+    && mkdir -p /tmp/twitch-audio /app/data /app/logs \
     && chown -R appuser:appuser /app /tmp/twitch-audio
 USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Open SSE streams (/api/messages/stream) never finish, so bound graceful shutdown.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]

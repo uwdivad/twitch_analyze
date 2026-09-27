@@ -13,6 +13,29 @@ import { compactChatMessages } from '../utils/messages';
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
+export const API_KEY_STORAGE_KEY = 'twitch-analyze-api-key';
+
+// Optional API_AUTH_TOKEN entered on the Settings page; sent as X-API-Key.
+export function readApiKey(): string {
+  try {
+    return window.localStorage.getItem(API_KEY_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function writeApiKey(value: string) {
+  try {
+    if (value) {
+      window.localStorage.setItem(API_KEY_STORAGE_KEY, value);
+    } else {
+      window.localStorage.removeItem(API_KEY_STORAGE_KEY);
+    }
+  } catch {
+    // Storage unavailable (private mode): requests simply go without the key.
+  }
+}
+
 // Every request aborts after this long so a single hung fetch can never wedge
 // the dashboard reload loop indefinitely.
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -61,7 +84,16 @@ export async function readError(response: Response): Promise<HttpError> {
 
 async function requestJson<T>(path: string, init: RequestInit, timeoutMs: number): Promise<T> {
   try {
-    const response = await fetch(`${API_BASE}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    const apiKey = readApiKey();
+    const headers = new Headers(init.headers);
+    if (apiKey) {
+      headers.set('X-API-Key', apiKey);
+    }
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers,
+      signal: AbortSignal.timeout(timeoutMs)
+    });
     if (!response.ok) {
       throw await readError(response);
     }
@@ -83,6 +115,20 @@ export async function postJson<T>(path: string, body: unknown, timeoutMs = REQUE
     path,
     {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    },
+    timeoutMs
+  );
+}
+
+export async function putJson<T>(path: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+  return requestJson<T>(
+    path,
+    {
+      method: 'PUT',
       headers: {
         'Content-Type': 'application/json'
       },

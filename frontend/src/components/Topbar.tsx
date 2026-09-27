@@ -1,3 +1,5 @@
+import { Settings } from 'lucide-react';
+
 import type { Theme } from '../hooks/useTheme';
 import type { AppView, SocketState } from '../types';
 import { Segmented } from './ui/Segmented';
@@ -11,6 +13,7 @@ type TopbarProps = {
   onToggleTheme: () => void;
 };
 
+// Settings is reached from the gear button, not the segmented control.
 const VIEW_OPTIONS: ReadonlyArray<{ value: AppView; label: string }> = [
   { value: 'live', label: 'Live' },
   { value: 'vods', label: 'VODs' }
@@ -50,6 +53,16 @@ export function Topbar({ socketState, view, onViewChange, theme, onToggleTheme }
             <span>{socketState}</span>
           </span>
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+          <button
+            aria-label="Settings"
+            aria-pressed={view === 'settings'}
+            className={`btn btn-ghost btn-icon topbar-settings${view === 'settings' ? ' is-active' : ''}`}
+            onClick={() => onViewChange('settings')}
+            title="Settings"
+            type="button"
+          >
+            <Settings size={16} />
+          </button>
         </div>
       </div>
     </header>

@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.core import runtime_settings
 from app.core.config import Settings, get_settings
 from app.ingestion.vod_replay import TwitchGqlClient, parse_vod_reference
 from app.models.chat import (
@@ -33,6 +34,7 @@ from app.models.vod import (
     VodAnalysisJob,
     VodAnalysisResponse,
 )
+from app.models.settings import SettingsResponse, SettingsUpdate
 from app.services.summaries import SummaryService
 from app.services.vod_analysis import (
     CATCHUP_ERROR_PREFIX,
@@ -70,6 +72,16 @@ def require_api_key(
     provided = x_api_key or ""
     if not secrets.compare_digest(provided.encode("utf-8"), token.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def require_feature(flag: str, label: str) -> Callable[..., None]:
+    """Route dependency rejecting requests while a feature flag is turned off."""
+
+    def dependency(settings: Settings = Depends(get_settings)) -> None:
+        if not getattr(settings, flag):
+            raise HTTPException(status_code=403, detail=f"Feature turned off in Settings: {label}")
+
+    return dependency
 
 
 def _prune_finished_jobs(
@@ -161,6 +173,51 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _settings_response(request: Request, **extra: Any) -> SettingsResponse:
+    settings = get_settings()
+    return SettingsResponse(
+        groups=list(runtime_settings.GROUPS),
+        settings=runtime_settings.describe(
+            settings,
+            overrides=runtime_settings.read_overrides(settings.settings_overrides_file),
+            startup=getattr(request.app.state, "startup_settings", None),
+            base=Settings(),
+        ),
+        features=runtime_settings.feature_flags(settings),
+        overrides_file=settings.settings_overrides_file,
+        **extra,
+    )
+
+
+@router.get("/api/features", response_model=dict[str, bool])
+async def features(settings: Settings = Depends(get_settings)) -> dict[str, bool]:
+    return runtime_settings.feature_flags(settings)
+
+
+@router.get("/api/settings", response_model=SettingsResponse, dependencies=[Depends(require_api_key)])
+async def read_settings(request: Request) -> SettingsResponse:
+    return _settings_response(request)
+
+
+@router.put("/api/settings", response_model=SettingsResponse, dependencies=[Depends(require_api_key)])
+async def update_settings(request: Request, payload: SettingsUpdate) -> SettingsResponse:
+    try:
+        changed = runtime_settings.save_overrides(payload.values)
+    except runtime_settings.SettingsUpdateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("Failed to write settings overrides")
+        raise HTTPException(status_code=500, detail="Failed to save settings") from exc
+
+    ingestion = getattr(request.app.state, "ingestion", None)
+    restart_ingestion = ingestion is not None and bool(changed & runtime_settings.INGESTION_SETTINGS)
+    if restart_ingestion:
+        await ingestion.restart(get_settings())
+    if changed:
+        logger.info("Settings updated: %s", ", ".join(sorted(changed)))
+    return _settings_response(request, changed=sorted(changed), ingestion_restarted=restart_ingestion)
+
+
 @router.get("/api/channels", response_model=list[ChannelInfo])
 async def channels(request: Request) -> list[ChannelInfo]:
     return list(request.app.state.channels.values())
@@ -169,7 +226,7 @@ async def channels(request: Request) -> list[ChannelInfo]:
 @router.post(
     "/api/transcriptions/start",
     response_model=TranscriptionJob,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(require_feature("enable_transcription", "Transcription"))],
 )
 async def start_transcription(request: Request, payload: StartTranscriptionRequest) -> TranscriptionJob:
     settings = get_settings()
@@ -230,7 +287,7 @@ async def transcription_job(request: Request, job_id: str) -> TranscriptionJob:
     "/api/vods/analyze",
     response_model=VodAnalysisResponse,
     status_code=202,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(require_feature("enable_vod_analysis", "VOD analysis"))],
 )
 async def analyze_vod(
     request: Request,
@@ -363,7 +420,7 @@ async def vod_activity(
 @router.post(
     "/api/vods/{video_id}/label",
     response_model=VodAnalysis,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(require_feature("enable_vod_labels", "AI peak labels"))],
 )
 async def label_vod(
     video_id: str,
@@ -529,7 +586,11 @@ async def insert_summary(
         raise HTTPException(status_code=500, detail="Failed to insert chat summary") from exc
 
 
-@router.post("/api/summaries/generate", response_model=ChatSummary, dependencies=[Depends(require_api_key)])
+@router.post(
+    "/api/summaries/generate",
+    response_model=ChatSummary,
+    dependencies=[Depends(require_api_key), Depends(require_feature("enable_summaries", "Chat summaries"))],
+)
 async def generate_summary(
     request: GenerateSummaryRequest,
     service: SummaryService = Depends(get_summary_service),

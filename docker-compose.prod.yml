@@ -28,22 +28,30 @@ services:
   backend:
     restart: unless-stopped
     ports: !override []
-    volumes: !override []
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: !override
+      - app-settings:/app/data
+      - app-logs:/app/logs
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 5
 
   worker:
     restart: unless-stopped
     ports: !override []
-    volumes: !override []
+    volumes: !override
+      - app-settings:/app/data
+      - app-logs:/app/logs
 
   transcript-worker:
     restart: unless-stopped
     ports: !override []
-    volumes: !override []
+    volumes: !override
+      - app-settings:/app/data
+      - app-logs:/app/logs
 
   audio-capture:
     restart: unless-stopped
     volumes: !override
+      - app-settings:/app/data
+      - app-logs:/app/logs
       - audio-chunks:/tmp/twitch-audio
 
   kafka-exporter:

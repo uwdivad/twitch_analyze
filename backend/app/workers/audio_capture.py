@@ -12,6 +12,7 @@ from uuid import uuid4
 from openai import OpenAI
 
 from app.core.config import get_settings
+from app.core.logging_setup import configure_logging
 from app.models.chat import TranscriptSegment
 from app.storage.kafka import KafkaJsonProducer
 
@@ -476,7 +477,7 @@ class AudioCaptureWorker:
 
 
 async def main() -> None:
-    logging.basicConfig(level=get_settings().log_level)
+    configure_logging(get_settings(), "audio-capture")
     worker = AudioCaptureWorker()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

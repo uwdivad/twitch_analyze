@@ -163,6 +163,10 @@ def command_for(service: str, install_frontend: bool) -> tuple[list[str], Path, 
                 "--port",
                 "8000",
                 "--reload",
+                # Open SSE live-feed streams never finish on their own; without a cap a
+                # reload waits forever for them and the API stops answering.
+                "--timeout-graceful-shutdown",
+                "5",
             ],
             BACKEND,
             env,
