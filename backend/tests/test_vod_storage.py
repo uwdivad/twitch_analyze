@@ -387,3 +387,37 @@ async def test_flush_awaits_started_producer() -> None:
     await producer.flush()
 
     assert flushed == [True]
+
+
+@pytest.mark.anyio
+async def test_insert_messages_columns_align_with_row_values() -> None:
+    client = FakeClickHouseClient()
+    message = _message("vod").model_copy(update={"eventsub_message_id": "evt-1", "message_text": "KEKW"})
+
+    await _repo(client).insert_messages([message])
+
+    assert len(client.inserts) == 1
+    table, rows, columns = client.inserts[0]
+    assert table == "chat_messages"
+    assert len(rows) == 1
+    assert len(columns) == len(rows[0])
+    assert len(set(columns)) == len(columns)
+    row = dict(zip(columns, rows[0], strict=True))
+    assert row["source"] == "vod"
+    assert row["session_id"] == "vod:123"
+    assert row["event_ts"] == datetime(2026, 4, 28, 12, tzinfo=UTC)
+    assert row["received_at"] == datetime(2026, 9, 1, tzinfo=UTC)
+    assert row["message_id"] == "message-1"
+    assert row["eventsub_message_id"] == "evt-1"
+    assert row["message_text"] == "KEKW"
+    assert row["session_date"] == date(2026, 4, 28)
+    assert loads(row["raw_event"]) == {}
+
+
+@pytest.mark.anyio
+async def test_insert_messages_skips_empty_batch() -> None:
+    client = FakeClickHouseClient()
+
+    await _repo(client).insert_messages([])
+
+    assert client.inserts == []

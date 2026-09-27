@@ -186,7 +186,15 @@ def detect_peaks(
         while i - start < max_extent and start - 1 >= 0 and start - 1 not in accepted_set and smoothed[start - 1] >= level:
             start -= 1
         end = min(i + 2, n)
-        while end - 1 - i < max_extent and end < n and end not in accepted_set and smoothed[end] >= level:
+        # Stop before the next peak's footprint (end + 1 accepted) too, so the clamp below
+        # cannot strip the next peak of the bucket its raw burst may sit in.
+        while (
+            end - 1 - i < max_extent
+            and end < n
+            and end not in accepted_set
+            and end + 1 not in accepted_set
+            and smoothed[end] >= level
+        ):
             end += 1
         start = max(start, previous_end)
         previous_end = end
