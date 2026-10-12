@@ -24,3 +24,8 @@ k8s/local/secret.yaml
 terraform.tfvars
 *.auto.tfvars
 backend/logs/
+
+# Local tooling output (not project source)
+.claude/worktrees/
+.playwright-mcp/
+.run/

@@ -50,10 +50,18 @@ def test_overrides_take_precedence_over_env(overrides_file, monkeypatch) -> None
     assert load_settings().twitch_channels == "from_ui"
 
 
-def test_invalid_overrides_fall_back_to_env(overrides_file) -> None:
-    overrides_file.write_text(json.dumps({"vod_max_peaks": 0}))
+def test_invalid_overrides_fall_back_to_env(overrides_file, monkeypatch) -> None:
+    monkeypatch.setenv("VOD_MAX_PEAKS", "9")
+    monkeypatch.setenv("TWITCH_CHANNELS", "from_env")
+    overrides_file.write_text(json.dumps({"vod_max_peaks": 0, "twitch_channels": "from_ui"}))
 
-    assert load_settings().vod_max_peaks == 12
+    settings = load_settings()
+
+    # The environment value wins over the invalid override (not the field default).
+    assert settings.vod_max_peaks == 9
+    # Overrides are validated as a whole: one invalid value discards the entire file,
+    # including otherwise valid keys saved alongside it.
+    assert settings.twitch_channels == "from_env"
 
 
 def test_save_overrides_coerces_persists_and_reports_changes(overrides_file) -> None:
@@ -78,14 +86,42 @@ def test_save_overrides_rejects_env_only_unknown_and_invalid(overrides_file) -> 
 
 
 def test_describe_never_returns_secret_values() -> None:
-    settings = Settings(_env_file=None, openai_api_key="sk-secret", clickhouse_password="pw")
+    base = Settings(
+        _env_file=None,
+        openai_api_key="sk-env",
+        twitch_client_secret="tcs-env",
+        clickhouse_password="pw",
+        vod_max_peaks=9,
+    )
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="sk-override",
+        twitch_client_secret="tcs-env",
+        clickhouse_password="pw",
+        vod_max_peaks=4,
+    )
 
-    fields = {field.key: field for field in runtime_settings.describe(settings, overrides={}, startup=None)}
+    fields = {
+        field.key: field
+        for field in runtime_settings.describe(
+            settings, overrides={"openai_api_key": "sk-override", "vod_max_peaks": 4}, startup=None, base=base
+        )
+    }
 
     assert fields["openai_api_key"].value is None
+    assert fields["openai_api_key"].env_value is None
+    assert fields["openai_api_key"].default is None
     assert fields["openai_api_key"].is_set is True
+    assert fields["openai_api_key"].overridden is True
+    assert fields["twitch_client_secret"].env_value is None
     assert fields["twitch_access_token"].value is None
-    assert "sk-secret" not in json.dumps([field.model_dump() for field in fields.values()])
+    assert fields["twitch_access_token"].is_set is False
+    # Non-secret fields do report the env value, proving `base` was consulted.
+    assert fields["vod_max_peaks"].value == 4
+    assert fields["vod_max_peaks"].env_value == 9
+    dumped = json.dumps([field.model_dump(mode="json") for field in fields.values()])
+    for secret in ("sk-env", "sk-override", "tcs-env"):
+        assert secret not in dumped
     assert not ENV_ONLY_SETTINGS & set(fields)
     assert fields["vod_max_peaks"].minimum == 1 and fields["vod_max_peaks"].maximum == 50
 
@@ -139,6 +175,8 @@ async def test_update_settings_returns_422_for_env_only(overrides_file) -> None:
     with pytest.raises(HTTPException) as exc:
         await routes.update_settings(request, SettingsUpdate(values={"kafka_chat_topic": "x"}))
     assert exc.value.status_code == 422
+    assert "KAFKA_CHAT_TOPIC" in exc.value.detail
+    assert not overrides_file.exists()
 
 
 @pytest.mark.anyio

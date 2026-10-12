@@ -562,3 +562,91 @@ cd frontend && npm run build        # passed
 ```
 
 Also checked against the running API with a stored VOD: both formats downloaded with the expected filenames, and an unknown id returned 404.
+
+## 2026-09-27 - Fix VOD Peak Stealing Its Neighbor's Burst
+
+### Reason
+
+A test audit added coverage for `detect_peaks` edge cases, and one new test showed a real bug. When two peaks sat close together, the first peak's range could grow up to the bucket just before the second peak's range. That bucket could hold the second peak's actual burst, and the overlap clamp then gave it to the first peak. The second peak then pointed at the flat stretch next to its burst and reported too few messages. For example, bursts at buckets 100 and 110 came out as `(100, 80), (111, 30)` instead of `(100, 80), (110, 80)`.
+
+### Change
+
+In `app/services/vod_analysis.py` `detect_peaks`, a peak's range now also stops growing one bucket before the next accepted peak's range. Nothing else in the algorithm changed. Stored analyses are not rewritten. Re-analyze with `force` to pick up the fix.
+
+The same PR adds about 70 tests for paths that had none, all in `backend/tests`. They cover:
+- The transcript consumer run loop, including commit-after-insert.
+- Fail-soft analytics routes and route error mapping.
+- The Settings catalog's restart flags.
+- Peak-detection edge cases, and VOD run cancellation and error paths.
+- ClickHouse column/row alignment.
+- The GraphQL HTTP transport.
+- Audio-capture failure publishing.
+- The EventSub websocket reconnect flow.
+
+### Verification
+
+`cd backend && PYTHONPATH=. pytest` (247 passed). Every new test was checked by deliberately breaking the code it covers and confirming it fails. That was 105 breaks, and each one was caught.
+
+## 2026-09-27 - Fix Summary Window on Non-UTC ClickHouse Servers
+
+### Reason
+
+Chat summaries always failed with "No chat messages found for the requested summary window", even while chat was being stored. `summary_context` sent the window bounds as timezone-aware datetimes. clickhouse-connect writes those out as plain date-time strings in the ClickHouse server's timezone, but `event_ts` is stored in UTC, so the server read them as UTC. On a server running in `America/New_York`, every summary window landed 4 hours in the past.
+
+### Change
+
+`ClickHouseRepository.summary_context` now filters on `toUnixTimestamp64Milli(event_ts)` and sends the window as UTC epoch milliseconds, the same approach the VOD queries already use. No other query passes datetime parameters.
+
+### Verification
+
+`cd backend && PYTHONPATH=. pytest` (284 passed). The new regression test fails on the old code. Against the local ClickHouse (server timezone `America/New_York`), a 60-minute window for a live channel returned 411 messages; before the fix it returned none.
+
+## 2026-10-08 - Save the Last Minutes of a Live Stream (Clips)
+
+### Reason
+
+There was no way to grab video from a stream that is happening now. Twitch keeps writing the "past broadcast" archive while a channel is live, so the tail of that in-progress VOD is the last few minutes of the stream. Given only a channel name, the app should find that VOD and save its last 5 to 15 minutes as a file.
+
+### Change
+
+**Live VOD lookup** (`backend/app/ingestion/live_vod.py`): `TwitchLiveVodSource` asks the existing web GQL client (new generic `TwitchGqlClient.query()`) for `user.stream` and the newest `ARCHIVE` videos, and picks the archive whose `createdAt` is at or after the stream start (2 min slack). Distinct errors for channel not found, not live, and live without a VOD. `parse_channel_reference` accepts a login or a `twitch.tv/<login>` URL. `LiveVodSource` is a protocol keyed by `platform`, so other platforms can be added behind the same API.
+
+**HLS helpers** (`backend/app/ingestion/hls.py`): tell master and media playlists apart, pick the highest-bandwidth variant, parse segments with durations, discontinuities and `EXT-X-MAP` init segments, take the shortest suffix covering N seconds, and render a self-contained VOD playlist (absolute URLs, `ENDLIST`). Writing our own playlist avoids ffmpeg's live handling of the in-progress playlist (no `ENDLIST`), which would start at the live edge instead of our offset.
+
+**Clip service** (`backend/app/services/clips.py`, `models/clips.py`): `ClipService.run()` resolves the live VOD, lets `streamlink --stream-url` resolve the VOD's playlist URL (it owns Twitch's undocumented playback-token flow), fetches and trims the playlist, then runs `ffmpeg -c copy` with `-progress` to copy the tail into `<job_id>.mp4` under `CLIP_OUTPUT_DIR`, writing a `<job_id>.json` sidecar on completion. Progress (`downloaded_seconds`) updates the in-memory `ClipJob`. Completed jobs are reloaded from sidecars at startup (`load_clip_jobs`). streamlink and ffmpeg run through the blocking `subprocess` API in worker threads, because uvicorn on Windows serves from a selector event loop that has no asyncio subprocess support (the first end-to-end run failed with `NotImplementedError`). Clips are files, not chat data, so Kafka and ClickHouse are not involved.
+
+**API** (`routes.py`, `main.py`, `config.py`): `POST /api/clips` (202, `{channel, platform, duration_minutes}`; 400 on a bad channel or over `CLIP_MAX_DURATION_MINUTES`, 429 over `CLIP_MAX_CONCURRENT_JOBS`), `GET /api/clips`, `GET /api/clips/{id}`, `GET /api/clips/{id}/download` (`FileResponse`, `video/mp4`, friendly `filename`; 409 until completed), `DELETE /api/clips/{id}` (cancels a running job and removes the files). Failed jobs stay in memory (last 50); completed ones are backed by files. Settings: `CLIP_OUTPUT_DIR`, `CLIP_MAX_CONCURRENT_JOBS`, `CLIP_MAX_DURATION_MINUTES`, `CLIP_STREAM_QUALITY`, `CLIP_RESOLVE_TIMEOUT_SECONDS`, `CLIP_DOWNLOAD_TIMEOUT_SECONDS`, all editable from the Settings page under a new **Clips** group (`runtime_settings.py`; the output directory needs an API restart, the rest apply to the next job). The lifespan loads saved clips and cancels running clip tasks on shutdown.
+
+**Frontend** (`frontend/src/features/clips/**`, `api/clips.ts`, `Topbar.tsx`, `App.tsx`, `types.ts`): a third **Clips** view (`#clips`) with a platform/channel/duration form (5, 10, 15 min; the last channel is remembered in localStorage), a job list with status pill, progress bar, VOD title, clip window, size, a **Download** link and **Delete**/**Cancel**. `useClipJobs` polls `/api/clips` every 2 s while any job is active.
+
+**Infra/docs**: `clip-files` volume mounted at `/tmp/twitch-clips` on the backend in both Compose files; the backend image pre-creates the directory; `.env.example`, `README.md` and `CLAUDE.md` describe the feature.
+
+### Result
+
+From the Clips tab, a live channel name yields a downloadable MP4 of the last few minutes of its stream in a few seconds (no re-encode; a 5-minute 1080p60 clip is roughly 290 MB). The list of saved clips survives backend restarts.
+
+Behavior notes:
+
+- Only works while the channel is live and has "Store past broadcasts" enabled. Sub-only VODs are not supported (no OAuth is passed to streamlink).
+- The clip window lags the live edge by whatever delay Twitch's VOD writer has (typically under a minute).
+- Twitch serves some archives as MPEG-TS and some (1080p60 seen in testing) as fragmented MP4 with an `EXT-X-MAP` init segment; both work.
+- The same undocumented GQL API as chat replay is used for the lookup; `streamlink` is the dependency that tracks Twitch's playback-token changes.
+
+### Verification
+
+```bash
+cd backend && PYTHONPATH=. pytest      # 321 passed; 1 pre-existing Windows-only failure in test_audio_capture.py
+                                       # (asserts a POSIX path string), unrelated to this change
+cd frontend && npm run build           # tsc + vite clean (existing >500 kB chunk warning only)
+docker compose config --quiet          # passed
+docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet  # passed (with GRAFANA_ADMIN_PASSWORD/CLICKHOUSE_PASSWORD set)
+```
+
+End to end against Twitch, on Windows:
+
+- GQL probe over 10 channels: live channels (jynxzi, zackrawrr, sodapoppin, ludwig, hasanabi, summit1g) each resolved to an archive created 4 to 5 s after the stream start; offline channels raised "not live".
+- `ClipService.run()` standalone: summit1g (fMP4 1080p60, 90 s) → `summit1g_20261008_0h34m50s-0h36m20s.mp4`, 86.8 MB, ffprobe duration 90.02 s, h264 1920x1080 + aac, 7.5 s wall time. ludwig (TS, 60 s) → 58.7 MB, 60.9 s. The first fMP4 attempt failed with `Error opening input files` until `EXT-X-MAP` was carried into the rendered playlist.
+- API on a uvicorn started without `--reload` (selector loop): `POST /api/clips` for `https://www.twitch.tv/sodapoppin` → 202 → completed in one 2 s poll → `GET .../download` returned 200 `video/mp4` with `attachment; filename="sodapoppin_20261008_2h30m00s-2h31m00s.mp4"`, 61.3 MB, ffprobe 60.01 s → `DELETE` 204, then 404 and the MP4 + sidecar gone. Error paths: offline channel → job failed "pokimane is not live right now"; unknown login → "Twitch channel 'zz_no_such_user_9x1' was not found"; YouTube URL → 400; 30 min → 400 "Clips are limited to 15 minutes"; `platform: youtube` → 422.
+- UI (Playwright, Vite on 5174 proxied to that backend): Clips tab, "hasanabi" + 5 min → downloading row with progress bar and `0:49 / 5:00`, then `saved` with title, `2:33:39 – 2:38:39 of the VOD · 287.8 MB`, Download link and Delete. Light and dark themes, 1440 px and 390 px, no horizontal overflow.
+
+Screenshots: `docs/screenshots/clips-view-light-1440.png` (downloading), `clips-view-dark-1440.png` (saved), `clips-view-dark-390.png`.

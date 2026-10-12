@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,7 @@ from app.core.logging_setup import configure_logging
 from app.core.metrics import CHAT_MESSAGES_INGESTED
 from app.ingestion.manager import IngestionManager
 from app.models.chat import ChatMessage
+from app.services.clips import load_clip_jobs
 from app.storage.clickhouse import ClickHouseRepository
 from app.storage.kafka import KafkaChatProducer
 from app.storage.realtime import RealtimeHub
@@ -47,6 +49,13 @@ async def lifespan(app: FastAPI):
     app.state.transcription_tasks = {}
     app.state.vod_jobs = {}
     app.state.vod_tasks = {}
+    # Completed clips persist as MP4 + JSON sidecar in CLIP_OUTPUT_DIR; reload the list.
+    try:
+        app.state.clip_jobs = load_clip_jobs(Path(settings.clip_output_dir))
+    except Exception:
+        logger.warning("Failed to load saved clips from %s", settings.clip_output_dir, exc_info=True)
+        app.state.clip_jobs = {}
+    app.state.clip_tasks = {}
 
     await app.state.kafka.start()
 
@@ -101,6 +110,16 @@ async def lifespan(app: FastAPI):
                 pass
             except Exception:
                 logger.exception("VOD analysis task raised during shutdown")
+        clip_tasks = list(app.state.clip_tasks.values())
+        for clip_task in clip_tasks:
+            clip_task.cancel()
+        for clip_task in clip_tasks:
+            try:
+                await clip_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Clip task raised during shutdown")
         try:
             await app.state.kafka.stop()
         except Exception:

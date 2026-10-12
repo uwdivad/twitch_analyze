@@ -270,10 +270,14 @@ class TwitchGqlClient:
             self._session = None
 
     async def fetch_video(self, video_id: str) -> VodMetadata:
-        response = await self._post({"query": VIDEO_QUERY, "variables": {"id": video_id}})
+        return video_from_gql(await self.query(VIDEO_QUERY, {"id": video_id}))
+
+    async def query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        """Run one raw (non-persisted) GQL query and return its response object."""
+        response = await self._post({"query": query, "variables": variables})
         if isinstance(response, list):
             response = response[0] if response else {}
-        return video_from_gql(response)
+        return response if isinstance(response, dict) else {}
 
     async def iter_comment_pages(self, video_id: str) -> AsyncIterator[list[dict[str, Any]]]:
         """Yield pages of raw comment nodes in replay order.

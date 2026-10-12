@@ -73,7 +73,7 @@ export type TranscriptionJob = {
   detail: string;
 };
 
-export type AppView = 'live' | 'vods' | 'settings';
+export type AppView = 'live' | 'vods' | 'clips' | 'settings';
 
 export type FeatureFlags = {
   twitch_ingestion: boolean;
@@ -124,6 +124,32 @@ export type SettingsResponse = {
   overrides_file: string;
   changed: string[];
   ingestion_restarted: boolean;
+};
+
+export type ClipPlatform = 'twitch';
+
+export type ClipJobStatus = 'queued' | 'resolving' | 'downloading' | 'completed' | 'failed';
+
+export type ClipJob = {
+  job_id: string;
+  platform: ClipPlatform | string;
+  channel_login: string;
+  channel_display_name: string;
+  requested_seconds: number;
+  status: ClipJobStatus;
+  started_at: string;
+  updated_at: string;
+  video_id: string;
+  video_title: string;
+  video_created_at: string | null;
+  clip_start_seconds: number;
+  clip_end_seconds: number;
+  clip_duration_seconds: number;
+  downloaded_seconds: number;
+  file_name: string;
+  file_size_bytes: number;
+  detail: string;
+  error: string;
 };
 
 export type VodJobStatus = 'queued' | 'fetching' | 'ingesting' | 'analyzing' | 'completed' | 'failed';

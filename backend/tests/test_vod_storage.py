@@ -194,6 +194,25 @@ async def test_summary_context_queries_exclude_vod_chat() -> None:
         assert params["source"] == "live"
 
 
+
+@pytest.mark.anyio
+async def test_summary_context_window_uses_epoch_ms_params() -> None:
+    # Datetime params are rendered in the ClickHouse server timezone, which shifted the
+    # window by the UTC offset on a non-UTC server; the window must be sent as UTC epoch ms.
+    stats_row = ("channel-1", "example", "Example", "channel-1:2026-04-28", 5, 2)
+    client = FakeClickHouseClient(query_results=[[stats_row], [], [], [], []])
+    repo = _repo(client)
+    before_ms = int(datetime.now(UTC).timestamp() * 1000)
+
+    await repo.summary_context(channel="example", window_minutes=10, max_messages=10)
+
+    after_ms = int(datetime.now(UTC).timestamp() * 1000)
+    for query, params in client.queries:
+        assert "toUnixTimestamp64Milli(event_ts) >= %(window_start_ms)s" in query
+        assert not any(isinstance(value, datetime) for value in params.values())
+        assert params["window_end_ms"] - params["window_start_ms"] == 10 * 60 * 1000
+        assert before_ms - 1 <= params["window_end_ms"] <= after_ms + 1
+
 def test_vod_analysis_row_round_trip_preserves_peaks() -> None:
     repo = _repo(FakeClickHouseClient())
     analysis = _analysis()
@@ -251,7 +270,9 @@ async def test_upsert_and_get_vod_analysis_use_fake_client() -> None:
 
 
 def test_fill_activity_buckets_zero_fills_gaps_and_drops_out_of_range() -> None:
-    rows = [(-1, 99, 99), (0, 3, 2), (2, 5, 4), (4, 1, 1), (5, 50, 50)]
+    # Out-of-range rows come last so a wrap-around bug (e.g. -1 landing in the last
+    # bucket) would overwrite real data instead of being masked by a later row.
+    rows = [(0, 3, 2), (2, 5, 4), (4, 1, 1), (5, 50, 50), (-1, 99, 99)]
 
     buckets = _fill_activity_buckets(rows, duration_seconds=45, bucket_seconds=10)
 
@@ -260,12 +281,6 @@ def test_fill_activity_buckets_zero_fills_gaps_and_drops_out_of_range() -> None:
     assert [bucket.offset_seconds for bucket in buckets] == [0, 10, 20, 30, 40]
     assert [bucket.message_count for bucket in buckets] == [3, 0, 5, 0, 1]
     assert [bucket.unique_chatter_count for bucket in buckets] == [2, 0, 4, 0, 1]
-
-
-def test_fill_activity_buckets_drops_negative_indices() -> None:
-    buckets = _fill_activity_buckets([(-2, 9, 9), (-1, 8, 8)], duration_seconds=20, bucket_seconds=10)
-
-    assert [(b.index, b.message_count) for b in buckets] == [(0, 0), (1, 0)]
 
 
 def test_fill_activity_buckets_handles_empty_and_invalid_inputs() -> None:
@@ -387,3 +402,37 @@ async def test_flush_awaits_started_producer() -> None:
     await producer.flush()
 
     assert flushed == [True]
+
+
+@pytest.mark.anyio
+async def test_insert_messages_columns_align_with_row_values() -> None:
+    client = FakeClickHouseClient()
+    message = _message("vod").model_copy(update={"eventsub_message_id": "evt-1", "message_text": "KEKW"})
+
+    await _repo(client).insert_messages([message])
+
+    assert len(client.inserts) == 1
+    table, rows, columns = client.inserts[0]
+    assert table == "chat_messages"
+    assert len(rows) == 1
+    assert len(columns) == len(rows[0])
+    assert len(set(columns)) == len(columns)
+    row = dict(zip(columns, rows[0], strict=True))
+    assert row["source"] == "vod"
+    assert row["session_id"] == "vod:123"
+    assert row["event_ts"] == datetime(2026, 4, 28, 12, tzinfo=UTC)
+    assert row["received_at"] == datetime(2026, 9, 1, tzinfo=UTC)
+    assert row["message_id"] == "message-1"
+    assert row["eventsub_message_id"] == "evt-1"
+    assert row["message_text"] == "KEKW"
+    assert row["session_date"] == date(2026, 4, 28)
+    assert loads(row["raw_event"]) == {}
+
+
+@pytest.mark.anyio
+async def test_insert_messages_skips_empty_batch() -> None:
+    client = FakeClickHouseClient()
+
+    await _repo(client).insert_messages([])
+
+    assert client.inserts == []

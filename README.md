@@ -10,6 +10,7 @@ Twitch Analyze is a realtime Twitch chat analytics app. It ingests live chat, st
 - 📊 Shows live and historical chat metrics in a React UI.
 - 🤖 Can generate chat summaries and stream transcripts when OpenAI features are enabled.
 - 🎬 Finds the moments chat went wild in past broadcasts (VOD analysis).
+- ✂️ Saves the last 5, 10 or 15 minutes of a live stream as an MP4 (Clips).
 - 🌗 Light and dark themes (toggle in the top bar; follows the system setting until you pick one).
 - 🚀 Includes Docker Compose, local Kubernetes manifests, and Terraform notes for deployment practice.
 
@@ -45,6 +46,12 @@ Open the **VODs** tab and paste a Twitch VOD URL or video id. The backend downlo
 The Twitch player embed only loads on `localhost` or an HTTPS domain. Open the dashboard at `http://localhost:5173`, not `127.0.0.1` or a LAN IP. Chat replay comes from Twitch's undocumented web GQL API. If Twitch changes it, update `TWITCH_GQL_CLIENT_ID` / `TWITCH_GQL_COMMENTS_QUERY_HASH` in `.env`.
 
 ![VOD analysis](docs/screenshots/vod-view-dark-1440.png)
+
+## Clips ✂️
+
+Open the **Clips** tab, enter a channel that is live right now (name or `twitch.tv/<channel>` URL), pick 5, 10 or 15 minutes and press **Save clip**. The backend looks up the VOD Twitch is recording for that stream, resolves its HLS playlist with streamlink, keeps only the segments covering the requested tail, and has ffmpeg copy them into an MP4 without re-encoding. The clip then shows up in the list with a **Download** button. Clips are plain files under `CLIP_OUTPUT_DIR` (a Docker volume in Compose) and are listed again after a restart until you delete them.
+
+This only works while the channel is live and has "Store past broadcasts" enabled, and it needs `ffmpeg` on the backend host (the Docker image includes it; streamlink is a Python dependency). The platform selector exists so other platforms can be added later; only Twitch is wired up today.
 
 ## Useful Commands 🧪
 

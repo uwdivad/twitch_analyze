@@ -82,14 +82,16 @@ async def test_summary_generation_stores_openai_result(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
-async def test_summary_generation_passes_timeout_to_openai_client(monkeypatch) -> None:
+async def test_summary_generation_sends_prompt_contract_to_openai(monkeypatch) -> None:
     from types import SimpleNamespace
 
     captured: dict = {}
+    requests: list[dict] = []
 
     class FakeResponses:
-        def create(self, **_kwargs):
-            return SimpleNamespace(output_text="### Short recap\nAll good.")
+        def create(self, **kwargs):
+            requests.append(kwargs)
+            return SimpleNamespace(output_text="\n  ### Short recap\nAll good.\n\n  ")
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
@@ -108,8 +110,30 @@ async def test_summary_generation_passes_timeout_to_openai_client(monkeypatch) -
 
     summary = await service.generate(channel="example", window_minutes=60)
 
-    assert captured["timeout"] == 12.5
+    assert captured == {"api_key": "test-key", "timeout": 12.5}
+    # Surrounding whitespace from the model output is stripped before storing.
     assert summary.summary_text == "### Short recap\nAll good."
+    assert clickhouse.inserted == summary
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request["model"] == "test-model"
+    assert [item["role"] for item in request["input"]] == ["system", "user"]
+    assert "Twitch chat" in request["input"][0]["content"]
+    prompt = request["input"][1]["content"]
+    assert "Channel: example" in prompt
+    assert "Window start: 2026-05-06T11:00:00+00:00" in prompt
+    assert "Window end: 2026-05-06T12:00:00+00:00" in prompt
+    assert "Message count: 2" in prompt
+    assert "Unique chatters: 1" in prompt
+    assert "Top chatters: viewer (2)" in prompt
+    assert "Top emotes: none" in prompt
+    assert "Sampled messages: 2" in prompt
+    assert "- 2026-05-06T11:30:00+00:00: 2 messages, 1 unique chatters" in prompt
+    assert "[2026-05-06T12:00:00+00:00] viewer: hello" in prompt
+    assert "[2026-05-06T12:00:00+00:00] viewer: great stream" in prompt
+    assert "### Short recap" in prompt
+    assert "### Activity spikes" in prompt
 
 
 @pytest.mark.anyio

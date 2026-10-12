@@ -358,9 +358,14 @@ class ClickHouseRepository:
         window_end = datetime.now(UTC)
         window_start = window_end - timedelta(minutes=window_minutes)
         where, params = self._message_filters(channel=channel, session_id=None)
-        time_filter = "event_ts >= %(window_start)s AND event_ts < %(window_end)s"
+        # Epoch-ms integers, not datetimes: clickhouse-connect renders datetime params in the
+        # server timezone, which shifts the window on a non-UTC server (event_ts is UTC).
+        time_filter = (
+            "toUnixTimestamp64Milli(event_ts) >= %(window_start_ms)s "
+            "AND toUnixTimestamp64Milli(event_ts) < %(window_end_ms)s"
+        )
         where = f"{where} AND {time_filter}" if where else f"WHERE {time_filter}"
-        params.update({"window_start": window_start, "window_end": window_end})
+        params.update({"window_start_ms": _to_unix_ms(window_start), "window_end_ms": _to_unix_ms(window_end)})
 
         stats_query = f"""
             SELECT

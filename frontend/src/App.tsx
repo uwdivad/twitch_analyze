@@ -17,6 +17,7 @@ import { Topbar } from './components/Topbar';
 import { TopList } from './components/TopList';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { VolumeChart } from './components/VolumeChart';
+import { ClipsView } from './features/clips/ClipsView';
 import { SettingsView } from './features/settings/SettingsView';
 import { VodView } from './features/vod/VodView';
 import { useLiveMessages } from './hooks/useLiveMessages';
@@ -54,11 +55,11 @@ const DEFAULT_FEATURES: FeatureFlags = {
 
 function viewFromHash(hash: string): AppView {
   const view = hash.replace(/^#/, '');
-  return view === 'vods' || view === 'settings' ? view : 'live';
+  return view === 'vods' || view === 'clips' || view === 'settings' ? view : 'live';
 }
 
-// The active view lives in location.hash (#live / #vods / #settings) so it survives reloads
-// and works with back/forward.
+// The active view lives in location.hash (#live / #vods / #clips / #settings) so it
+// survives reloads and works with back/forward.
 function useHashView(): [AppView, (view: AppView) => void] {
   const [view, setViewState] = React.useState<AppView>(() => viewFromHash(window.location.hash));
 
@@ -452,6 +453,8 @@ export function App() {
           />
         ) : view === 'vods' ? (
           <VodView canAnalyze={features.vod_analysis} canLabel={features.vod_labels} />
+        ) : view === 'clips' ? (
+          <ClipsView />
         ) : (
           <div className="live-view">
             <header className="page-header">

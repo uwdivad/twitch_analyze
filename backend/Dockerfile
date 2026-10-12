@@ -13,12 +13,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
-# Run as a non-root user; pre-create the audio chunk dir it needs to write to
-# (matches AUDIO_CHUNK_DIR default and the audio-chunks volume mount), plus the
+# Run as a non-root user; pre-create the audio chunk and clip dirs it needs to write
+# to (match AUDIO_CHUNK_DIR / CLIP_OUTPUT_DIR defaults and the volume mounts), plus the
 # settings-overrides and log dirs so the app-settings/app-logs volumes are owned by appuser.
 RUN useradd --create-home --uid 1000 appuser \
-    && mkdir -p /tmp/twitch-audio /app/data /app/logs \
-    && chown -R appuser:appuser /app /tmp/twitch-audio
+    && mkdir -p /tmp/twitch-audio /tmp/twitch-clips /app/data /app/logs \
+    && chown -R appuser:appuser /app /tmp/twitch-audio /tmp/twitch-clips
 USER appuser
 
 EXPOSE 8000
