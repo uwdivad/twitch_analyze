@@ -11,6 +11,7 @@ Twitch Analyze is a realtime Twitch chat analytics app. It ingests live chat, st
 - 🤖 Can generate chat summaries and stream transcripts when OpenAI features are enabled.
 - 🎬 Finds the moments chat went wild in past broadcasts (VOD analysis).
 - ✂️ Saves the last 5, 10 or 15 minutes of a live stream as an MP4 (Clips).
+- 📡 Checks whether a streamer is live on Twitch, Kick and YouTube at once and plays the live streams (Streams).
 - 🌗 Light and dark themes (toggle in the top bar; follows the system setting until you pick one).
 - 🚀 Includes Docker Compose, local Kubernetes manifests, and Terraform notes for deployment practice.
 
@@ -52,6 +53,11 @@ The Twitch player embed only loads on `localhost` or an HTTPS domain. Open the d
 Open the **Clips** tab, enter a channel that is live right now (name or `twitch.tv/<channel>` URL), pick 5, 10 or 15 minutes and press **Save clip**. The backend looks up the VOD Twitch is recording for that stream, resolves its HLS playlist with streamlink, keeps only the segments covering the requested tail, and has ffmpeg copy them into an MP4 without re-encoding. The clip then shows up in the list with a **Download** button. Clips are plain files under `CLIP_OUTPUT_DIR` (a Docker volume in Compose) and are listed again after a restart until you delete them.
 
 This only works while the channel is live and has "Store past broadcasts" enabled, and it needs `ffmpeg` on the backend host (the Docker image includes it; streamlink is a Python dependency). The platform selector exists so other platforms can be added later; only Twitch is wired up today.
+
+
+## Streams 📡
+
+Open the **Streams** tab and enter an account name. The backend checks Twitch, Kick and YouTube at the same time, without any API keys: Twitch through the same web GQL API as chat replay, Kick through its public channel JSON, and YouTube by reading the channel's `/live` page. Each platform gets a card: live channels embed the player (muted), offline ones show the channel avatar and a link, and unknown names say so. If the streamer uses a different handle somewhere, press **Edit** on that card to set it for that platform only. The status refreshes every minute while the tab is open. Kick sits behind Cloudflare and may refuse server-side requests from some hosts; that shows as "Kick could not be checked" with a Retry button rather than breaking the other two.
 
 ## Useful Commands 🧪
 

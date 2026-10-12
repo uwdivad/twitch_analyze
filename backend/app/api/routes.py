@@ -37,7 +37,9 @@ from app.models.vod import (
     VodAnalysisResponse,
 )
 from app.models.settings import SettingsResponse, SettingsUpdate
+from app.models.streams import StreamStatusResponse
 from app.services.clips import ClipService
+from app.services.stream_status import StreamStatusService
 from app.services.summaries import SummaryService
 from app.services.vod_analysis import (
     CATCHUP_ERROR_PREFIX,
@@ -195,6 +197,10 @@ def get_clip_service(request: Request, settings: Settings = Depends(get_settings
         jobs=request.app.state.clip_jobs,
         sources={"twitch": TwitchLiveVodSource(_gql_client_factory(settings))},
     )
+
+
+def get_stream_status_service(request: Request) -> StreamStatusService:
+    return request.app.state.stream_status
 
 
 @router.get("/health")
@@ -579,6 +585,40 @@ async def delete_clip(
             logger.exception("Clip task %s raised while being cancelled", job_id)
     service.delete(job_id)
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Streamer live status (Twitch / Kick / YouTube)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/api/streams/status",
+    response_model=StreamStatusResponse,
+    dependencies=[Depends(require_feature("enable_stream_status", "Streamer live status"))],
+)
+async def stream_status(
+    name: str = Query(min_length=1, max_length=256),
+    twitch: str | None = Query(default=None, max_length=256),
+    kick: str | None = Query(default=None, max_length=256),
+    youtube: str | None = Query(default=None, max_length=256),
+    settings: Settings = Depends(get_settings),
+    service: StreamStatusService = Depends(get_stream_status_service),
+) -> StreamStatusResponse:
+    """Is `name` live on each platform? Per-platform handles may be overridden.
+
+    One platform failing (blocked, timed out) is reported in its own entry as
+    `state="error"`; only an unusable name is a request error.
+    """
+    overrides = {
+        platform: value.strip()
+        for platform, value in (("twitch", twitch), ("kick", kick), ("youtube", youtube))
+        if value and value.strip()
+    }
+    try:
+        return await service.lookup(name, overrides, settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/messages/recent", response_model=list[ChatMessage])

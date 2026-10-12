@@ -46,6 +46,7 @@ GROUPS: tuple[SettingGroup, ...] = (
     SettingGroup(id="transcription", label="Transcription & audio", description="Audio capture and speech-to-text."),
     SettingGroup(id="vod", label="VOD analysis", description="Chat-replay import and peak detection."),
     SettingGroup(id="clips", label="Clips", description="Saving the last minutes of a live stream as MP4."),
+    SettingGroup(id="streams", label="Streams", description="Live-status checks for the Streams view."),
     SettingGroup(id="app", label="App", description="API process behavior."),
 )
 
@@ -63,6 +64,9 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
                 "Allow titling VOD chat peaks with OpenAI.", "bool", "live"),
     SettingSpec("enable_audio_capture", "features", "Continuous audio capture",
                 "Run the standalone audio-capture worker for the audio channels.", "bool", "worker"),
+    SettingSpec("enable_stream_status", "features", "Streamer live status",
+                "Allow the Streams view to check whether a streamer is live on Twitch, Kick and YouTube.",
+                "bool", "live"),
     # Twitch
     SettingSpec("twitch_channels", "twitch", "Channels",
                 "Comma-separated channel logins to ingest.", "list", "ingestion"),
@@ -145,6 +149,16 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
                 "Seconds allowed for streamlink to resolve the VOD playlist URL.", "float", "live"),
     SettingSpec("clip_download_timeout_seconds", "clips", "Download timeout (s)",
                 "Minimum seconds allowed for the ffmpeg download; grows with the clip length.", "float", "live"),
+    # Streams
+    SettingSpec("stream_status_timeout_seconds", "streams", "Check timeout (s)",
+                "Seconds each platform gets to answer a live-status check.", "float", "live"),
+    SettingSpec("stream_status_cache_seconds", "streams", "Cache (s)",
+                "How long a live-status answer is reused before the platform is asked again. 0 disables.",
+                "int", "live"),
+    SettingSpec("kick_api_url", "streams", "Kick channels API",
+                "Kick's channel JSON endpoint; the slug is appended.", "string", "live"),
+    SettingSpec("youtube_base_url", "streams", "YouTube base URL",
+                "Site whose /@handle/live page is read for YouTube status.", "string", "live"),
     # App
     SettingSpec("recent_message_limit", "app", "Live buffer size",
                 "Messages kept in memory for the live feed fallback.", "int", "restart"),
@@ -167,6 +181,7 @@ FEATURE_FLAGS: dict[str, str] = {
     "vod_analysis": "enable_vod_analysis",
     "vod_labels": "enable_vod_labels",
     "audio_capture": "enable_audio_capture",
+    "stream_status": "enable_stream_status",
 }
 
 

@@ -73,7 +73,7 @@ export type TranscriptionJob = {
   detail: string;
 };
 
-export type AppView = 'live' | 'vods' | 'clips' | 'settings';
+export type AppView = 'live' | 'vods' | 'clips' | 'streams' | 'settings';
 
 export type FeatureFlags = {
   twitch_ingestion: boolean;
@@ -82,6 +82,7 @@ export type FeatureFlags = {
   vod_analysis: boolean;
   vod_labels: boolean;
   audio_capture: boolean;
+  stream_status: boolean;
 };
 
 export type SettingKind = 'string' | 'secret' | 'int' | 'float' | 'bool' | 'select' | 'list';
@@ -124,6 +125,35 @@ export type SettingsResponse = {
   overrides_file: string;
   changed: string[];
   ingestion_restarted: boolean;
+};
+
+export type StreamPlatform = 'twitch' | 'kick' | 'youtube';
+
+export type StreamState = 'live' | 'offline' | 'not_found' | 'error';
+
+// Mirrors backend app/models/streams.py PlatformStatus.
+export type PlatformStatus = {
+  platform: StreamPlatform;
+  handle: string;
+  state: StreamState;
+  display_name: string;
+  channel_url: string;
+  avatar_url: string;
+  title: string;
+  category: string;
+  viewer_count: number | null;
+  started_at: string | null;
+  thumbnail_url: string;
+  video_id: string;
+  channel_id: string;
+  detail: string;
+  checked_at: string;
+};
+
+export type StreamStatusResponse = {
+  name: string;
+  checked_at: string;
+  platforms: PlatformStatus[];
 };
 
 export type ClipPlatform = 'twitch';
