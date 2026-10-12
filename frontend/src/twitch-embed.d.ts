@@ -19,6 +19,8 @@ interface TwitchPlayer {
   getCurrentTime(): number;
   getDuration?(): number;
   setVideo(videoId: string, timestamp: number): void;
+  setChannel?(channel: string): void;
+  setMuted?(muted: boolean): void;
   pause(): void;
   play(): void;
   addEventListener(event: string, callback: (...args: unknown[]) => void): void;

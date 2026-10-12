@@ -19,6 +19,7 @@ import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { VolumeChart } from './components/VolumeChart';
 import { ClipsView } from './features/clips/ClipsView';
 import { SettingsView } from './features/settings/SettingsView';
+import { StreamsView } from './features/streams/StreamsView';
 import { VodView } from './features/vod/VodView';
 import { useLiveMessages } from './hooks/useLiveMessages';
 import { usePreferences } from './hooks/usePreferences';
@@ -50,15 +51,16 @@ const DEFAULT_FEATURES: FeatureFlags = {
   transcription: true,
   vod_analysis: true,
   vod_labels: true,
-  audio_capture: false
+  audio_capture: false,
+  stream_status: true
 };
 
 function viewFromHash(hash: string): AppView {
   const view = hash.replace(/^#/, '');
-  return view === 'vods' || view === 'clips' || view === 'settings' ? view : 'live';
+  return view === 'vods' || view === 'clips' || view === 'streams' || view === 'settings' ? view : 'live';
 }
 
-// The active view lives in location.hash (#live / #vods / #clips / #settings) so it
+// The active view lives in location.hash (#live / #vods / #clips / #streams / #settings) so it
 // survives reloads and works with back/forward.
 function useHashView(): [AppView, (view: AppView) => void] {
   const [view, setViewState] = React.useState<AppView>(() => viewFromHash(window.location.hash));
@@ -455,6 +457,8 @@ export function App() {
           <VodView canAnalyze={features.vod_analysis} canLabel={features.vod_labels} />
         ) : view === 'clips' ? (
           <ClipsView />
+        ) : view === 'streams' ? (
+          <StreamsView enabled={features.stream_status} />
         ) : (
           <div className="live-view">
             <header className="page-header">

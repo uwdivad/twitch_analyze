@@ -650,3 +650,36 @@ End to end against Twitch, on Windows:
 - UI (Playwright, Vite on 5174 proxied to that backend): Clips tab, "hasanabi" + 5 min → downloading row with progress bar and `0:49 / 5:00`, then `saved` with title, `2:33:39 – 2:38:39 of the VOD · 287.8 MB`, Download link and Delete. Light and dark themes, 1440 px and 390 px, no horizontal overflow.
 
 Screenshots: `docs/screenshots/clips-view-light-1440.png` (downloading), `clips-view-dark-1440.png` (saved), `clips-view-dark-390.png`.
+
+## 2026-10-11 - Streams View: Is This Streamer Live on Twitch, Kick or YouTube?
+
+### Reason
+
+Alongside clipping, the dashboard needed a place to type one account name and see, per platform, whether that streamer is live right now and watch the stream if so. Streamers often use the same name on Twitch, Kick and YouTube but not always, so each platform needs its own handle override.
+
+### Change
+
+**Live-status service** (`backend/app/services/stream_status.py`, `models/streams.py`): `StreamStatusService.lookup(name, overrides, settings)` checks the three platforms concurrently with `asyncio.gather` and returns a `StreamStatusResponse` with exactly three `PlatformStatus` entries (`state` is `live`, `offline`, `not_found` or `error`, plus display name, channel URL, avatar, title, category, viewer count, start time, thumbnail, and for YouTube the live `video_id`/`channel_id`). All checks are keyless:
+
+- Twitch: `TwitchGqlClient.query()` with `user(login) { stream { ... } }` (same client id as chat replay; `max_retries=1` for an interactive check).
+- Kick: `GET kick.com/api/v2/channels/<slug>` with a browser user agent (`livestream` null means offline, 404 means not found; 403/429 from Cloudflare become `error` with "blocked by Cloudflare").
+- YouTube: `GET youtube.com/@<handle>/live` with consent cookies (falls back once to `/c/<name>/live`). Canonical `watch?v=` + `"isLiveNow":true` means live; canonical `/channel/UC…` means offline; a `watch` canonical without `isLiveNow` is a scheduled stream (offline, `detail="Scheduled stream"`).
+
+`normalize_handle` accepts bare names, `@handles` and channel URLs per platform (lowercase for Twitch/Kick). A per-platform invalid handle (a dot in a Twitch login) is that platform's `error`; only a name unusable everywhere raises. One failing platform never fails the request. Results are cached per (platform, handle) for `STREAM_STATUS_CACHE_SECONDS` (30 s default, 0 disables); the whole check is capped at twice `STREAM_STATUS_TIMEOUT_SECONDS`. One service instance lives on `app.state.stream_status` with a shared aiohttp session closed at shutdown. The aiohttp body is read in a loop: `StreamReader.read(n)` returns the first available chunk, which on the first end-to-end run yielded a 10 KB YouTube shell without the signals.
+
+**API/settings**: `GET /api/streams/status?name=&twitch=&kick=&youtube=` (400 for an unusable name; 403 when `ENABLE_STREAM_STATUS` is off). New settings `ENABLE_STREAM_STATUS` (feature flag, in `/api/features` as `stream_status`), `STREAM_STATUS_TIMEOUT_SECONDS`, `STREAM_STATUS_CACHE_SECONDS`, `KICK_API_URL`, `YOUTUBE_BASE_URL`, all live-applied, under a new **Streams** settings group.
+
+**Frontend** (`frontend/src/features/streams/**`, `api/streams.ts`, `App.tsx`, `Topbar.tsx`, `types.ts`): a fourth **Streams** view (`#streams`). One search box; three platform cards (brand-colored top border) with a Live/Offline/Not found/Unavailable pill, the handle as a link, an **Edit** control that sets a per-platform handle override ("custom" tag, "Use main name" to clear), and a body per state: live → muted autoplaying player (Twitch interactive embed by channel; Kick `player.kick.com/<slug>`; YouTube `embed/<video_id>`) with title · category · viewers · uptime; offline → avatar, name and **Open channel**; not found → hint to use Edit; error → alert with **Retry**. `useStreamStatus` re-polls every 60 s while the tab is visible (catches up on return), keys players on the stream identity so a refresh never reloads an iframe, and keeps the open lookup in sessionStorage so switching views restores it. The Twitch embed script loader moved from `VodPlayer.tsx` to `utils/twitchEmbed.ts` so both players share it.
+
+### Verification
+
+```bash
+cd backend && PYTHONPATH=. pytest      # 364 passed (42 new in tests/test_stream_status.py)
+cd frontend && npm run build           # tsc + vite clean (existing >500 kB chunk warning only)
+```
+
+Against the live platforms from this host: `lofigirl` → Twitch live (294 viewers, started 2026-10-10 07:21 UTC), Kick offline (channel exists), YouTube live (`1-LpQekNa9g`, 3,546 watching); `mkbhd` → offline on all three with the YouTube channel id and avatar; `xqc` with `youtube=@xQcOW` → the override handle is checked; `zz_no_such_user_9x1` → not found on all three (YouTube tried `/@name/live` then `/c/name/live`); `bad name!` → 400. A repeated lookup within 30 s is served from the cache (0.2 ms). Through the running API on `:8000`: `GET /api/streams/status?name=lofigirl` → 200 with the three entries; `/api/features` now includes `stream_status`.
+
+UI (Playwright driving the system Chrome headlessly, Vite on 5173 proxied to that backend): `lofigirl` → Twitch and YouTube cards embed the live players, Kick shows the offline card with avatar and **Open channel**; `mkbhd` → offline on all three (YouTube resolves the display name "Marques Brownlee" and avatar). **Edit** on the YouTube card with `@mkbhd` → the card re-checks only that platform (`?name=lofigirl&youtube=%40mkbhd`), shows the "custom" tag, and the Twitch iframe is left untouched; switching to Clips and back restores the search and the override from sessionStorage. Light and dark themes, 1440 px and 390 px, no horizontal overflow. At 390 px the Twitch embed shows its play button instead of autoplaying (Twitch requires a player of at least 400×300 for autoplay).
+
+Screenshots: `docs/screenshots/streams-view-dark-1440.png`, `streams-view-light-1440.png`, `streams-view-dark-390.png`, `streams-view-dark-1440-offline.png`, `streams-view-dark-1440-override.png`.

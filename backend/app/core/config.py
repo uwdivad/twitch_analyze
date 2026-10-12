@@ -114,6 +114,14 @@ class Settings(BaseSettings):
     clip_resolve_timeout_seconds: float = 60.0
     clip_download_timeout_seconds: float = 600.0
 
+    # Streams view: keyless "is this streamer live?" checks on Twitch, Kick and YouTube.
+    enable_stream_status: bool = True
+    stream_status_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    # Results are reused for this long so the dashboard's polling does not hammer the platforms.
+    stream_status_cache_seconds: int = Field(default=30, ge=0, le=600)
+    kick_api_url: str = "https://kick.com/api/v2/channels"
+    youtube_base_url: str = "https://www.youtube.com"
+
     @property
     def channel_logins(self) -> list[str]:
         return [part.strip().lower() for part in self.twitch_channels.split(",") if part.strip()]

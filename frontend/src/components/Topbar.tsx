@@ -17,7 +17,8 @@ type TopbarProps = {
 const VIEW_OPTIONS: ReadonlyArray<{ value: AppView; label: string }> = [
   { value: 'live', label: 'Live' },
   { value: 'vods', label: 'VODs' },
-  { value: 'clips', label: 'Clips' }
+  { value: 'clips', label: 'Clips' },
+  { value: 'streams', label: 'Streams' }
 ];
 
 export function Topbar({ socketState, view, onViewChange, theme, onToggleTheme }: TopbarProps) {

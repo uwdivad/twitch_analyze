@@ -211,4 +211,5 @@ def test_features_endpoint_reflects_disabled_flags(make_client) -> None:
         "vod_analysis": True,
         "vod_labels": False,
         "audio_capture": True,
+        "stream_status": True,
     }

@@ -14,6 +14,7 @@ from app.core.metrics import CHAT_MESSAGES_INGESTED
 from app.ingestion.manager import IngestionManager
 from app.models.chat import ChatMessage
 from app.services.clips import load_clip_jobs
+from app.services.stream_status import StreamStatusService
 from app.storage.clickhouse import ClickHouseRepository
 from app.storage.kafka import KafkaChatProducer
 from app.storage.realtime import RealtimeHub
@@ -56,6 +57,8 @@ async def lifespan(app: FastAPI):
         logger.warning("Failed to load saved clips from %s", settings.clip_output_dir, exc_info=True)
         app.state.clip_jobs = {}
     app.state.clip_tasks = {}
+    # Shared across requests for its aiohttp session and short per-handle cache.
+    app.state.stream_status = StreamStatusService()
 
     await app.state.kafka.start()
 
@@ -120,6 +123,10 @@ async def lifespan(app: FastAPI):
                 pass
             except Exception:
                 logger.exception("Clip task raised during shutdown")
+        try:
+            await app.state.stream_status.aclose()
+        except Exception:
+            logger.exception("Failed to close the stream status HTTP session during shutdown")
         try:
             await app.state.kafka.stop()
         except Exception:
