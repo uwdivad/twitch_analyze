@@ -31,6 +31,7 @@ services:
     volumes: !override
       - app-settings:/app/data
       - app-logs:/app/logs
+      - clip-files:/tmp/twitch-clips
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 5
 
   worker:
@@ -86,3 +87,4 @@ volumes:
   caddy-data:
   caddy-config:
   kafka-data:
+  clip-files:

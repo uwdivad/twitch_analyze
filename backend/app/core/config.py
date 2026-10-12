@@ -105,6 +105,15 @@ class Settings(BaseSettings):
     enable_vod_analysis: bool = True
     enable_vod_labels: bool = True
 
+    # Live-VOD clips: save the last N minutes of a channel's in-progress VOD.
+    clip_output_dir: str = "/tmp/twitch-clips"
+    clip_max_concurrent_jobs: int = Field(default=2, ge=1, le=10)
+    clip_max_duration_minutes: int = Field(default=15, ge=1, le=60)
+    # streamlink quality name for the VOD stream ("best", "720p60", "audio_only", ...).
+    clip_stream_quality: str = "best"
+    clip_resolve_timeout_seconds: float = 60.0
+    clip_download_timeout_seconds: float = 600.0
+
     @property
     def channel_logins(self) -> list[str]:
         return [part.strip().lower() for part in self.twitch_channels.split(",") if part.strip()]

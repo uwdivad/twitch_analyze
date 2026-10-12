@@ -69,6 +69,7 @@ services:
       - ./backend/app:/app/app
       - app-settings:/app/data
       - app-logs:/app/logs
+      - clip-files:/tmp/twitch-clips
     # The SSE live feed never closes on its own, so cap graceful shutdown or a
     # reload waits forever on open dashboard tabs.
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 5
@@ -210,3 +211,5 @@ volumes:
   app-settings:
   # Daily rolling log files, one per backend process (api.log, clickhouse-consumer.log, ...).
   app-logs:
+  # Saved clips (MP4 + JSON sidecar) from the Clips tab.
+  clip-files:

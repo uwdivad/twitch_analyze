@@ -45,6 +45,7 @@ GROUPS: tuple[SettingGroup, ...] = (
     SettingGroup(id="openai", label="OpenAI", description="Models and limits for summaries, labels and transcription."),
     SettingGroup(id="transcription", label="Transcription & audio", description="Audio capture and speech-to-text."),
     SettingGroup(id="vod", label="VOD analysis", description="Chat-replay import and peak detection."),
+    SettingGroup(id="clips", label="Clips", description="Saving the last minutes of a live stream as MP4."),
     SettingGroup(id="app", label="App", description="API process behavior."),
 )
 
@@ -130,6 +131,20 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
                 "string", "live"),
     SettingSpec("twitch_gql_comments_query_hash", "vod", "Comments query hash",
                 "Persisted-query hash for VideoCommentsByOffsetOrCursor.", "string", "live"),
+    # Clips
+    SettingSpec("clip_output_dir", "clips", "Output directory",
+                "Where clip MP4s and their JSON sidecars are written. Saved clips are listed from here at startup.",
+                "string", "restart"),
+    SettingSpec("clip_max_concurrent_jobs", "clips", "Max concurrent jobs",
+                "Further clip starts are rejected.", "int", "live"),
+    SettingSpec("clip_max_duration_minutes", "clips", "Max clip length (min)",
+                "Longest clip a request may ask for.", "int", "live"),
+    SettingSpec("clip_stream_quality", "clips", "Stream quality",
+                "streamlink quality name for the VOD stream (best, 720p60, audio_only, ...).", "string", "live"),
+    SettingSpec("clip_resolve_timeout_seconds", "clips", "Resolve timeout (s)",
+                "Seconds allowed for streamlink to resolve the VOD playlist URL.", "float", "live"),
+    SettingSpec("clip_download_timeout_seconds", "clips", "Download timeout (s)",
+                "Minimum seconds allowed for the ffmpeg download; grows with the clip length.", "float", "live"),
     # App
     SettingSpec("recent_message_limit", "app", "Live buffer size",
                 "Messages kept in memory for the live feed fallback.", "int", "restart"),

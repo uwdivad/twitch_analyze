@@ -16,7 +16,8 @@ type TopbarProps = {
 // Settings is reached from the gear button, not the segmented control.
 const VIEW_OPTIONS: ReadonlyArray<{ value: AppView; label: string }> = [
   { value: 'live', label: 'Live' },
-  { value: 'vods', label: 'VODs' }
+  { value: 'vods', label: 'VODs' },
+  { value: 'clips', label: 'Clips' }
 ];
 
 export function Topbar({ socketState, view, onViewChange, theme, onToggleTheme }: TopbarProps) {

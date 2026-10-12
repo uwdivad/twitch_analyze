@@ -7,11 +7,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.core import runtime_settings
 from app.core.config import Settings, get_settings
+from app.ingestion.live_vod import TwitchLiveVodSource, parse_channel_reference
 from app.ingestion.vod_replay import TwitchGqlClient, parse_vod_reference
 from app.models.chat import (
     ChannelInfo,
@@ -26,6 +27,7 @@ from app.models.chat import (
     TranscriptionJob,
     VolumePoint,
 )
+from app.models.clips import ACTIVE_CLIP_STATUSES, ClipJob, CreateClipRequest
 from app.models.vod import (
     ACTIVE_VOD_STATUSES,
     AnalyzeVodRequest,
@@ -35,6 +37,7 @@ from app.models.vod import (
     VodAnalysisResponse,
 )
 from app.models.settings import SettingsResponse, SettingsUpdate
+from app.services.clips import ClipService
 from app.services.summaries import SummaryService
 from app.services.vod_analysis import (
     CATCHUP_ERROR_PREFIX,
@@ -57,6 +60,8 @@ MAX_MESSAGE_BATCH_SIZE = 500
 MAX_FINISHED_TRANSCRIPTION_JOBS = 50
 # Maximum number of finished VOD analysis jobs kept in memory.
 MAX_FINISHED_VOD_JOBS = 50
+# Maximum number of failed clip jobs kept in memory (completed ones are backed by files).
+MAX_FAILED_CLIP_JOBS = 50
 # Upper bound on buckets returned by the VOD activity endpoint when a caller picks a small bucket.
 MAX_VOD_ACTIVITY_BUCKETS = 3600
 
@@ -85,12 +90,20 @@ def require_feature(flag: str, label: str) -> Callable[..., None]:
 
 
 def _prune_finished_jobs(
-    jobs: dict[str, TranscriptionJob] | dict[str, VodAnalysisJob],
+    jobs: dict[str, TranscriptionJob] | dict[str, VodAnalysisJob] | dict[str, ClipJob],
     max_finished: int = MAX_FINISHED_TRANSCRIPTION_JOBS,
     active_statuses: frozenset[str] = frozenset({"running"}),
+    finished_statuses: frozenset[str] | None = None,
 ) -> None:
-    """Keep at most `max_finished` finished jobs, evicting the oldest first."""
-    finished = [job_id for job_id, job in jobs.items() if job.status not in active_statuses]
+    """Keep at most `max_finished` finished jobs, evicting the oldest first.
+
+    A job counts as finished when its status is not active, or, if
+    ``finished_statuses`` is given, only when its status is one of those.
+    """
+    if finished_statuses is None:
+        finished = [job_id for job_id, job in jobs.items() if job.status not in active_statuses]
+    else:
+        finished = [job_id for job_id, job in jobs.items() if job.status in finished_statuses]
     excess = len(finished) - max_finished
     if excess <= 0:
         return
@@ -165,6 +178,22 @@ def get_vod_label_service(
         api_key=settings.openai_api_key,
         model=settings.openai_vod_label_model or settings.openai_summary_model,
         timeout_seconds=settings.openai_timeout_seconds,
+    )
+
+
+def _default_parse_channel_reference(value: str) -> str:
+    return parse_channel_reference(value)
+
+
+def get_channel_reference_parser() -> Callable[[str], str]:
+    return _default_parse_channel_reference
+
+
+def get_clip_service(request: Request, settings: Settings = Depends(get_settings)) -> ClipService:
+    return ClipService(
+        settings=settings,
+        jobs=request.app.state.clip_jobs,
+        sources={"twitch": TwitchLiveVodSource(_gql_client_factory(settings))},
     )
 
 
@@ -435,6 +464,121 @@ async def label_vod(
     except Exception as exc:
         logger.exception("Failed to label VOD peaks for %s", video_id)
         raise HTTPException(status_code=500, detail="Failed to label VOD peaks") from exc
+
+
+# ---------------------------------------------------------------------------
+# Live-VOD clips
+# ---------------------------------------------------------------------------
+
+
+def _sorted_clip_jobs(jobs: dict[str, ClipJob]) -> list[ClipJob]:
+    return sorted(jobs.values(), key=lambda job: job.started_at, reverse=True)
+
+
+@router.post(
+    "/api/clips",
+    response_model=ClipJob,
+    status_code=202,
+    dependencies=[Depends(require_api_key)],
+)
+async def create_clip(
+    request: Request,
+    payload: CreateClipRequest,
+    settings: Settings = Depends(get_settings),
+    service: ClipService = Depends(get_clip_service),
+    parse_channel: Callable[[str], str] = Depends(get_channel_reference_parser),
+) -> ClipJob:
+    try:
+        channel_login = parse_channel(payload.channel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid channel name or Twitch channel URL") from exc
+    if payload.duration_minutes > settings.clip_max_duration_minutes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Clips are limited to {settings.clip_max_duration_minutes} minutes",
+        )
+
+    jobs: dict[str, ClipJob] = request.app.state.clip_jobs
+    tasks: dict[str, asyncio.Task] = request.app.state.clip_tasks
+    active = sum(1 for job in jobs.values() if job.status in ACTIVE_CLIP_STATUSES)
+    if active >= settings.clip_max_concurrent_jobs:
+        raise HTTPException(status_code=429, detail="Too many concurrent clip jobs")
+
+    now = datetime.now(UTC)
+    job = ClipJob(
+        job_id=str(uuid.uuid4()),
+        platform=payload.platform,
+        channel_login=channel_login,
+        requested_seconds=payload.duration_minutes * 60,
+        status="queued",
+        started_at=now,
+        updated_at=now,
+        detail="Queued",
+    )
+    jobs[job.job_id] = job
+
+    task = asyncio.create_task(service.run(job.job_id))
+    tasks[job.job_id] = task
+
+    def _on_done(finished: asyncio.Task) -> None:
+        if tasks.get(job.job_id) is finished:
+            tasks.pop(job.job_id, None)
+        _prune_finished_jobs(jobs, MAX_FAILED_CLIP_JOBS, finished_statuses=frozenset({"failed"}))
+
+    task.add_done_callback(_on_done)
+    return job
+
+
+@router.get("/api/clips", response_model=list[ClipJob])
+async def clips(request: Request, limit: int = Query(default=50, ge=1, le=500)) -> list[ClipJob]:
+    return _sorted_clip_jobs(request.app.state.clip_jobs)[:limit]
+
+
+@router.get("/api/clips/{job_id}", response_model=ClipJob)
+async def clip(request: Request, job_id: str) -> ClipJob:
+    job = request.app.state.clip_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return job
+
+
+@router.get("/api/clips/{job_id}/download")
+async def download_clip(
+    request: Request,
+    job_id: str,
+    service: ClipService = Depends(get_clip_service),
+) -> FileResponse:
+    job = request.app.state.clip_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    if job.status != "completed":
+        raise HTTPException(status_code=409, detail=f"Clip is not ready (status: {job.status})")
+    path = service.video_path(job_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Clip file is missing on the server")
+    return FileResponse(path, media_type="video/mp4", filename=job.file_name or f"{job_id}.mp4")
+
+
+@router.delete("/api/clips/{job_id}", status_code=204, dependencies=[Depends(require_api_key)])
+async def delete_clip(
+    request: Request,
+    job_id: str,
+    service: ClipService = Depends(get_clip_service),
+) -> Response:
+    jobs: dict[str, ClipJob] = request.app.state.clip_jobs
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    task = request.app.state.clip_tasks.pop(job_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Clip task %s raised while being cancelled", job_id)
+    service.delete(job_id)
+    return Response(status_code=204)
 
 
 @router.get("/api/messages/recent", response_model=list[ChatMessage])
