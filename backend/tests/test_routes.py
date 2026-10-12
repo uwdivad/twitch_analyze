@@ -703,6 +703,45 @@ async def test_vod_activity_404_and_fail_soft() -> None:
 
 
 @pytest.mark.anyio
+async def test_export_vod_json_and_csv_downloads() -> None:
+    import json
+
+    from app.api import routes
+
+    analysis = _vod_analysis()
+    clickhouse = VodClickHouse(analysis=analysis)
+    response = await routes.export_vod(video_id="123456", format="json", bucket_seconds=30, clickhouse=clickhouse)
+    assert response.media_type == "application/json"
+    assert response.headers["content-disposition"] == 'attachment; filename="example-123456-analysis.json"'
+    payload = json.loads(response.body)
+    assert payload["export_version"] == 1
+    assert payload["analysis"]["video_id"] == "123456"
+    assert payload["activity"]["bucket_seconds"] == 30
+    assert clickhouse.activity_kwargs["bucket_seconds"] == 30
+
+    clickhouse = VodClickHouse(analysis=analysis)
+    response = await routes.export_vod(video_id="123456", format="csv", bucket_seconds=None, clickhouse=clickhouse)
+    assert response.media_type.startswith("text/csv")
+    assert response.headers["content-disposition"] == 'attachment; filename="example-123456-peaks.csv"'
+    assert response.body.decode().startswith("peak_id,start_seconds")
+    # The CSV only needs the stored analysis, not the activity query.
+    assert clickhouse.activity_kwargs is None
+
+
+@pytest.mark.anyio
+async def test_export_vod_404_and_503() -> None:
+    from app.api import routes
+
+    with pytest.raises(HTTPException) as exc:
+        await routes.export_vod(video_id="123456", format="json", bucket_seconds=None, clickhouse=VodClickHouse())
+    assert exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as exc:
+        await routes.export_vod(video_id="123456", format="csv", bucket_seconds=None, clickhouse=VodClickHouse(fail=True))
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.anyio
 async def test_label_vod_returns_503_without_key_and_404_without_analysis() -> None:
     from app.api import routes
     from app.services.vod_analysis import VodLabelService

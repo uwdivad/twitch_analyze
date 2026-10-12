@@ -1,5 +1,5 @@
 import type { VodActivity, VodAnalysis, VodAnalysisResponse } from '../types';
-import { getJson, postJson } from './client';
+import { API_BASE, getJson, postJson } from './client';
 
 // AI labeling calls OpenAI synchronously on the backend, so it gets a much
 // longer timeout than the default request budget.
@@ -30,4 +30,16 @@ export async function labelVodPeaks(videoId: string): Promise<VodAnalysis> {
 
 export async function loadRecentVods(limit = 10): Promise<VodAnalysis[]> {
   return getJson<VodAnalysis[]>(`/api/vods?limit=${limit}`);
+}
+
+export type VodExportFormat = 'json' | 'csv';
+
+// Plain download link (GET, no API key needed): the backend sends
+// Content-Disposition: attachment, so the browser saves the file.
+export function vodExportUrl(videoId: string, format: VodExportFormat, bucketSeconds?: number | null): string {
+  const params = new URLSearchParams({ format });
+  if (bucketSeconds) {
+    params.set('bucket_seconds', String(bucketSeconds));
+  }
+  return `${API_BASE}${vodPath(videoId)}/export?${params.toString()}`;
 }

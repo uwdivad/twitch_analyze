@@ -1,5 +1,6 @@
 import React from 'react';
 
+import { vodExportUrl } from '../../api/vods';
 import type { VodAnalysis, VodAnalysisJob } from '../../types';
 import { formatOffset } from '../../utils/format';
 import { VodActivityBar } from './VodActivityBar';
@@ -234,6 +235,28 @@ export const VodView = React.memo(function VodView({ canAnalyze, canLabel }: Vod
                 ) : null}
               </div>
               ) : null}
+
+              <div className="vod-export">
+                <span className="vod-stat-label">Export</span>
+                <div className="vod-export-actions">
+                  <a
+                    className="btn"
+                    href={vodExportUrl(analysis.video_id, 'json', selectedBucket)}
+                    download
+                    title="Analysis, peaks and activity at the selected bucket size"
+                  >
+                    JSON
+                  </a>
+                  <a
+                    className="btn"
+                    href={vodExportUrl(analysis.video_id, 'csv')}
+                    download
+                    title="One row per peak, for spreadsheets"
+                  >
+                    Peaks CSV
+                  </a>
+                </div>
+              </div>
 
               <RecentList recent={vod.recent} activeId={analysis.video_id} onOpen={vod.open} />
             </aside>

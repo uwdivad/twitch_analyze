@@ -539,6 +539,30 @@ Added `app/core/logging_setup.py` (`configure_logging`), called by the API and e
 
 `cd backend && PYTHONPATH=. pytest` (177 passed); manual check that a configured process writes to both console and file without duplicate handlers.
 
+## 2026-09-27 - Export VOD Analyses
+
+### Reason
+
+A finished VOD analysis could only be viewed in the dashboard. There was no way to save it as a file, share it, or open the peaks in a spreadsheet.
+
+### Change
+
+- New `GET /api/vods/{video_id}/export?format=json|csv[&bucket_seconds=N]`. It returns the file as an attachment named `<channel>-<video_id>-analysis.json` or `<channel>-<video_id>-peaks.csv`.
+  - `json` is a versioned bundle (`export_version`, `exported_at`, the stored `analysis` with all peaks, and the `activity` buckets at the requested bucket size, which defaults to the analysis bucket).
+  - `csv` has one row per peak: offsets in seconds and `h:mm:ss`, a Twitch link to the peak start, rates and scores, label/title, top emotes and tokens, and sample messages. Cells that start with `=`, `+`, `-` or `@` are prefixed with `'` so spreadsheet apps don't run chat text as formulas.
+  - A missing analysis returns 404 and a ClickHouse error returns 503, the same as the activity endpoint. A failed activity query exports an empty bucket list.
+- The VOD view's side panel has an **Export** group with **JSON** (uses the selected bucket size) and **Peaks CSV** download links.
+- `vod_activity` and the export route share the new helpers `_load_vod_analysis_or_404` and `_load_vod_activity` in `routes.py`.
+
+### Verification
+
+```bash
+cd backend && PYTHONPATH=. pytest   # 185 passed, incl. tests/test_vod_export.py
+cd frontend && npm run build        # passed
+```
+
+Also checked against the running API with a stored VOD: both formats downloaded with the expected filenames, and an unknown id returned 404.
+
 ## 2026-09-27 - Fix VOD Peak Stealing Its Neighbor's Burst
 
 ### Reason
